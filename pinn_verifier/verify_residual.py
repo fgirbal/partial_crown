@@ -3,8 +3,6 @@ import argparse
 import time
 import json
 
-from pyparsing import empty
-
 from scipy import optimize
 from tqdm import tqdm
 import numpy as np
