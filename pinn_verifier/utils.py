@@ -1,3 +1,6 @@
+"""
+Library of generally useful functions.
+"""
 import copy
 from typing import Tuple, List
 

@@ -1,3 +1,7 @@
+"""
+Adapted from the error computations of https://github.com/maziarraissi/PINNs, to take into account that the input is always
+(t, x) instead of (x, t). Computes error and plots u_theta and f_theta accross the domain.
+"""
 import argparse
 
 import scipy.io
@@ -20,6 +24,8 @@ usol = data['usol'].T.flatten()
 
 X, T = np.meshgrid(x, t)
 X_star = np.hstack((X.flatten()[:,None], T.flatten()[:,None]))
+
+# IMPORTANT: input is (t, x) instead of (x, t), so must flip the grid generation
 grid_points = torch.tensor(np.stack([X_star[:, 1], X_star[:, 0]], axis=1), dtype=torch.float32)
 # grid_points = torch.tensor(np.stack([X_star[:, 0], X_star[:, 1]], axis=1), dtype=torch.float32)
 

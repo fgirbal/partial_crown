@@ -1,3 +1,6 @@
+"""
+Greedy branching strategy as described in the paper.
+"""
 import copy
 import time
 import json
@@ -148,16 +151,6 @@ def greedy_input_branching(
                 verbose_log(verbose, f"---- {i} / {maximum_computations} ----", MessageType.GENERAL_OUTPUT)
                 verbose_log(verbose, f"{current_piece_domain}", MessageType.INDIVIDUAL_PROGRESS)
 
-                # verifier = BurgersVerifier(
-                #     layers,
-                #     activation_relaxation=activation_relaxation,
-                #     activation_derivative_relaxation=activation_derivative_relaxation,
-                #     activation_second_derivative_relaxation=activation_second_derivative_relaxation,
-                #     feasibility_tol=feasibility_tol,
-                #     optimality_tol=optimality_tol
-                # )
-                # piece_lb, piece_ub = verifier.compute_residual_bound(current_piece_domain)
-
                 piece_lb, piece_ub, piece_logs = verifier_fn(layers, current_piece_domain, debug=debug_param)
                 if type(piece_lb) is torch.Tensor:
                     piece_lb = piece_lb.detach().item()
@@ -193,12 +186,6 @@ def greedy_input_branching(
                     max(all_min - piece_lb, piece_ub - all_max).item(),
                     piece_lb,
                     piece_ub,
-                    # {
-                    #     "u_theta_bounds": [verifier.u_theta.lower_bounds[-1][0].item(), verifier.u_theta.upper_bounds[-1][0].item()],
-                    #     "u_dt_theta_bounds": [verifier.u_dt_theta.lower_bounds[-1][0].item(), verifier.u_dt_theta.upper_bounds[-1][0].item()],
-                    #     "u_dx_theta_bounds": [verifier.u_dx_theta.lower_bounds[-1][0].item(), verifier.u_dx_theta.upper_bounds[-1][0].item()],
-                    #     "u_dxdx_theta_bounds": [verifier.u_dxdx_theta.lower_bounds[-1][0].item(), verifier.u_dxdx_theta.upper_bounds[-1][0].item()],
-                    # },
                     piece_logs,
                     current_piece_domain.detach().numpy().tolist()
                 ])
