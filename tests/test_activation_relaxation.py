@@ -1,3 +1,6 @@
+"""
+Test the activation relaxations are valid lower and upper bound lines of the underlying functions.
+"""
 from typing import Tuple
 
 import torch
@@ -5,7 +8,7 @@ import torch
 from pinn_verifier.activations import ActivationRelaxation, ActivationRelaxationType
 from pinn_verifier.activations.tanh import TanhRelaxation, TanhDerivativeRelaxation, TanhSecondDerivativeRelaxation
 
-N_INTERVALS = 5000
+N_INTERVALS = 1000
 
 def activation_relaxation_bounds_included(activation_relaxation: ActivationRelaxation, lb: torch.Tensor, ub: torch.Tensor):
     lb_line, ub_line = activation_relaxation.get_bounds(lb, ub)
@@ -31,28 +34,27 @@ def activation_relaxation_bounds_included(activation_relaxation: ActivationRelax
     
     return ret_val
 
+def test_random_tanh_relaxation():
+    activation = TanhRelaxation(ActivationRelaxationType.SINGLE_LINE)
 
-# def test_random_tanh_relaxation():
-#     activation = TanhRelaxation(ActivationRelaxationType.SINGLE_LINE)
+    lbs = torch.FloatTensor(N_INTERVALS).uniform_(-5, 5)
+    ubs = lbs + torch.FloatTensor(N_INTERVALS).uniform_(1e-2, 10)
 
-#     lbs = torch.FloatTensor(N_INTERVALS).uniform_(-5, 5)
-#     ubs = lbs + torch.FloatTensor(N_INTERVALS).uniform_(1e-2, 10)
+    for i in range(N_INTERVALS):
+        assert activation_relaxation_bounds_included(activation, lbs[i], ubs[i])
 
-#     for i in range(N_INTERVALS):
-#         assert activation_relaxation_bounds_included(activation, lbs[i], ubs[i])
+    return True
 
-#     return True
+def test_random_tanh_derivative_relaxation():
+    activation = TanhDerivativeRelaxation(ActivationRelaxationType.MULTI_LINE)
 
-# def test_random_tanh_derivative_relaxation():
-#     activation = TanhDerivativeRelaxation(ActivationRelaxationType.MULTI_LINE)
+    lbs = torch.FloatTensor(N_INTERVALS).uniform_(-5, 5)
+    ubs = lbs + torch.FloatTensor(N_INTERVALS).uniform_(1e-2, 4)
 
-#     lbs = torch.FloatTensor(N_INTERVALS).uniform_(-5, 5)
-#     ubs = lbs + torch.FloatTensor(N_INTERVALS).uniform_(1e-2, 4)
+    for i in range(N_INTERVALS):
+        assert activation_relaxation_bounds_included(activation, lbs[i], ubs[i])
 
-#     for i in range(N_INTERVALS):
-#         assert activation_relaxation_bounds_included(activation, lbs[i], ubs[i])
-
-#     return True
+    return True
 
 def test_random_tanh_second_derivative_relaxation():
     activation = TanhSecondDerivativeRelaxation(ActivationRelaxationType.MULTI_LINE)
