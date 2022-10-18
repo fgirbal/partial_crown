@@ -1,4 +1,5 @@
-from mailbox import _singlefileMailbox
+import argparse
+
 import matplotlib.pyplot as plt
 import torch.nn
 from scipy import optimize
@@ -76,25 +77,99 @@ def compute_lower_upper_bounds_lines(lb, ub, ub_line_ub_bias=0.9, lb_line_ub_bia
             ub_line[0] = (sigmoid(ub) - sigmoid(lb)) / (ub - lb)
             ub_line[1] = sigmoid(ub) - ub_line[0] * ub
 
-    return lb_line, ub_line
+    return [lb_line], [ub_line]
 
+
+from matplotlib.widgets import Slider, Button
+
+parser = argparse.ArgumentParser()
+parser.add_argument('-lb', type=float, default=-3.5)
+parser.add_argument('-ub', type=float, default=-0.5)
+args = parser.parse_args()
+
+fn_min = -0.1
+fn_max = 1.1
+
+fig, ax = plt.subplots()
 
 x = torch.linspace(-5, 5, 1000)
-y = torch.nn.Sigmoid()(x)
-plt.plot(x, y)
+y = sigmoid(x)
+plt.plot(x, y, c="b")
 
-lb = torch.tensor(-2.5, dtype=torch.float)
-ub = torch.tensor(1.9, dtype=torch.float)
+lb = torch.tensor(args.lb, dtype=torch.float)
+ub = torch.tensor(args.ub, dtype=torch.float)
 x_1 = torch.linspace(lb, ub, 250)
 
-lb_line, ub_line = compute_lower_upper_bounds_lines(lb, ub, lb_line_ub_bias=0.4, ub_line_ub_bias=0.5)
-y_lb = lb_line[0] * x_1 + lb_line[1]
-y_ub = ub_line[0] * x_1 + ub_line[1]
+lb_lines, ub_lines = compute_lower_upper_bounds_lines(lb, ub, lb_line_ub_bias=0.4, ub_line_ub_bias=0.5)
 
-plt.plot(x_1, y_lb)
-plt.plot(x_1, y_ub)
+for lb_line in lb_lines:
+    y_lb = lb_line[0] * x_1 + lb_line[1]
+    plt.plot(x_1, y_lb, c='r')
 
-plt.tight_layout()
+for ub_line in ub_lines:
+    y_ub = ub_line[0] * x_1 + ub_line[1]
+    plt.plot(x_1, y_ub, c='g')
+
+plt.subplots_adjust(left=0.1, bottom=0.35, right=0.9)
+
+ax_ub = plt.axes([0.1, 0.15, 0.8, 0.03])
+ub_slider = Slider(
+    ax=ax_ub,
+    label='ub',
+    valmin=-5,
+    valmax=5,
+    valinit=args.ub,
+)
+
+ax_lb = plt.axes([0.1, 0.05, 0.8, 0.03])
+lb_slider = Slider(
+    ax=ax_lb,
+    label='lb',
+    valmin=-5,
+    valmax=5,
+    valinit=args.lb,
+)
+
+# The function to be called anytime a slider's value changes
+def update(val):
+    for _ in enumerate(ax.lines):
+        ax.lines.pop(0)
+
+    # plt.clf()
+
+    x = torch.linspace(-5, 5, 1000)
+    y = sigmoid(x)
+    ax.plot(x, y, c="b")
+
+    x_1 = torch.linspace(torch.tensor(lb_slider.val), torch.tensor(ub_slider.val), 250)
+
+    lb_lines, ub_lines = compute_lower_upper_bounds_lines(torch.tensor(lb_slider.val), torch.tensor(ub_slider.val), lb_line_ub_bias=0.4, ub_line_ub_bias=0.5)
+
+    for lb_line in lb_lines:
+        y_lb = lb_line[0] * x_1 + lb_line[1]
+        ax.plot(x_1, y_lb, c='r')
+
+    for ub_line in ub_lines:
+        y_ub = ub_line[0] * x_1 + ub_line[1]
+        ax.plot(x_1, y_ub, c='g')
+
+    ax.set_xlim([-5.5, 5.5])
+    ax.set_ylim([fn_min, fn_max])
+
+    # fig.canvas.draw_idle()
+
+
+# register the update function with each slider
+ub_slider.on_changed(update)
+lb_slider.on_changed(update)
+
+# plt.plot(x_1, y_lb)
+# plt.plot(x_1, y_ub)
+
+ax.set_xlim([-5.5, 5.5])
+ax.set_ylim([fn_min, fn_max])
+
+# plt.tight_layout()
 plt.show()
 
 # import pdb

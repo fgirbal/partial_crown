@@ -1,4 +1,3 @@
-from enum import Enum
 from typing import List, Tuple
 
 import torch
@@ -6,59 +5,10 @@ import numpy as np
 import gurobipy as grb
 from scipy import optimize
 
+from .activation_relaxations import ActivationRelaxation, ActivationRelaxationType, line_type, quadratic_type
+
 softplus = torch.nn.Softplus()
 sigmoid = torch.nn.Sigmoid()
-
-line_type = Tuple[torch.tensor, torch.tensor]
-quadratic_type = Tuple[torch.tensor, torch.tensor, torch.tensor]
-
-
-class ActivationRelaxationType(Enum):
-    SINGLE_LINE = 0
-    MULTI_LINE = 1
-    QUADRATIC = 2
-    PIECEWISE_LINEAR = 3
-
-
-class ActivationRelaxation():
-    def __init__(self, type: ActivationRelaxationType) -> None:
-        self.type = type
-    
-    @staticmethod
-    def add_linear_lb(grb_model: grb.Model, input_var: grb.Var, output_var: grb.Var, lb_line: line_type):
-        grb_model.addConstr(output_var >= lb_line[0].item() * input_var + lb_line[1].item() - grb_model.params.FeasibilityTol)
-
-    @staticmethod
-    def add_linear_ub(grb_model: grb.Model, input_var: grb.Var, output_var: grb.Var, ub_line: line_type):
-        grb_model.addConstr(output_var <= ub_line[0].item() * input_var + ub_line[1].item() + grb_model.params.FeasibilityTol)
-
-    def single_line_relaxation(self, grb_model: grb.Model, input_var: grb.Var, output_var: grb.Var, lb: torch.tensor, ub: torch.tensor) -> line_type:
-        raise NotImplementedError
-    
-    def multi_line_relaxation(self, grb_model: grb.Model, input_var: grb.Var, output_var: grb.Var, lb: torch.tensor, ub: torch.tensor)  -> Tuple[List[line_type], List[line_type]]:
-        raise NotImplementedError
-    
-    def quadratic_relaxation(self, grb_model: grb.Model, input_var: grb.Var, output_var: grb.Var, lb: torch.tensor, ub: torch.tensor):
-        raise NotImplementedError
-
-    def piecewise_linear_relaxation(self, grb_model: grb.Model, input_var: grb.Var, output_var: grb.Var, lb: torch.tensor, ub: torch.tensor):
-        raise NotImplementedError
-
-    def relax(self, grb_model: grb.Model, input_var: grb.Var, output_var: grb.Var, lb: torch.tensor, ub: torch.tensor) -> List[List[float]]:        
-        if lb == ub:
-            return None
-
-        assert ub > lb
-
-        if self.type == ActivationRelaxationType.SINGLE_LINE:
-            return self.single_line_relaxation(grb_model, input_var, output_var, lb, ub)
-        if self.type == ActivationRelaxationType.MULTI_LINE:
-            return self.multi_line_relaxation(grb_model, input_var, output_var, lb, ub)
-        if self.type == ActivationRelaxationType.QUADRATIC:
-            return self.quadratic_relaxation(grb_model, input_var, output_var, lb, ub)
-        if self.type == ActivationRelaxationType.PIECEWISE_LINEAR:
-            return self.piecewise_linear_relaxation(grb_model, input_var, output_var, lb, ub)
-
 
 class SoftplusRelaxation(ActivationRelaxation):
     def __init__(self, type: ActivationRelaxationType, single_line_bias: float = 0.65, multi_line_biases: List[float] = [0.1, 0.25, 0.5, 0.75, 0.9], piecewise_linear_bias: float = 0.5) -> None:
@@ -77,7 +27,7 @@ class SoftplusRelaxation(ActivationRelaxation):
         b = softplus(d) - m * d
         return m, b
 
-    def single_line_relaxation(self, grb_model: grb.Model, input_var: grb.Var, output_var: grb.Var, lb: torch.tensor, ub: torch.tensor) -> line_type:
+    def single_line_relaxation(self, lb: torch.tensor, ub: torch.tensor) -> line_type:
         # softplus is a convex function, so upper bound is just the connection of the two ends of the interval
         # lower bound is at a given bias point
         ub_line_m = (softplus(ub) - softplus(lb)) / (ub - lb)
@@ -88,12 +38,9 @@ class SoftplusRelaxation(ActivationRelaxation):
         d = self.single_line_bias * ub + (1 - self.single_line_bias) * lb
         lb_line = self.softplus_tangent_at_point_d(d)
 
-        self.add_linear_lb(grb_model, input_var, output_var, lb_line)
-        self.add_linear_ub(grb_model, input_var, output_var, ub_line)
-
         return lb_line, ub_line
     
-    def multi_line_relaxation(self, grb_model: grb.Model, input_var: grb.Var, output_var: grb.Var, lb: torch.tensor, ub: torch.tensor) -> Tuple[List[line_type], List[line_type]]:
+    def multi_line_relaxation(self, lb: torch.tensor, ub: torch.tensor) -> Tuple[List[line_type], List[line_type]]:
         # relax softplus with multiple linear lower bounds
         # returns an array of lower bounds and an array of upper bounds
         ub_line_m = (softplus(ub) - softplus(lb)) / (ub - lb)
@@ -106,66 +53,34 @@ class SoftplusRelaxation(ActivationRelaxation):
             d = bias * ub + (1 - bias) * lb
             lb_lines.append(self.softplus_tangent_at_point_d(d))
 
-        for lb_line in lb_lines:
-            self.add_linear_lb(grb_model, input_var, output_var, lb_line)
-        
-        for ub_line in ub_lines:
-            self.add_linear_ub(grb_model, input_var, output_var, ub_line)
-
-        # import matplotlib.pyplot as plt
-
-        # x = torch.linspace(-5, 5, 1000)
-        # y = softplus(x)
-        # plt.plot(x, y, c="b")
-
-        # lb = torch.tensor(lb, dtype=torch.float)
-        # ub = torch.tensor(ub, dtype=torch.float)
-        # x_1 = torch.linspace(lb, ub, 250)
-
-        # for lb_line in lb_lines:
-        #     y_lb = lb_line[0] * x_1 + lb_line[1]
-        #     plt.plot(x_1, y_lb, c='r')
-
-        # for ub_line in ub_lines:
-        #     y_ub = ub_line[0] * x_1 + ub_line[1]
-        #     plt.plot(x_1, y_ub, c='g')
-
-        # plt.show()
-
         return lb_lines, ub_lines
     
-    def quadratic_relaxation(self, grb_model: grb.Model, input_var: grb.Var, output_var: grb.Var, lb: torch.tensor, ub: torch.tensor) -> quadratic_type:
+    def quadratic_relaxation(self, lb: torch.tensor, ub: torch.tensor) -> quadratic_type:
         # linear lower bound and universal upper bound
         d = self.single_line_bias * ub + (1 - self.single_line_bias) * lb
         lb_line = self.softplus_tangent_at_point_d(d)
 
         ub_quad = (0.1, 0.5, 0.85)
 
-        lb_quad_expr = lb_line[1].item() * input_var + lb_line[2].item()
-        ub_quad_expr = ub_quad[0].item() * input_var * input_var + ub_quad[1].item() * input_var + ub_quad[2].item()
-
-        grb_model.addConstr(output_var >= lb_quad_expr)
-        grb_model.addConstr(output_var <= ub_quad_expr)
-
         return (0, lb_line[0], lb_line[1]), ub_quad
 
-    def piecewise_linear_relaxation(self, grb_model: grb.Model, input_var: grb.Var, output_var: grb.Var, lb: torch.tensor, ub: torch.tensor):
+    def piecewise_linear_relaxation(self, lb: torch.tensor, ub: torch.tensor):
         # approximate the lower bound the multi-line pieces]
         lb_lines = []
         for bias in self.multi_line_biases:
             d = bias * ub + (1 - bias) * lb
             lb_lines.append(self.softplus_tangent_at_point_d(d))
 
-        for lb_line in lb_lines:
-            self.add_linear_lb(grb_model, input_var, output_var, lb_line)
+        # for lb_line in lb_lines:
+        #     self.add_linear_lb(grb_model, input_var, output_var, lb_line)
 
         # two pieces for the upper bound
         d = self.piecewise_linear_bias * ub + (1 - self.piecewise_linear_bias) * lb
         
-        max_v = grb_model.addVar(
-            lb=softplus(lb), ub=softplus(ub),
-            obj=0, vtype=grb.GRB.CONTINUOUS
-        )
+        # max_v = grb_model.addVar(
+        #     lb=softplus(lb), ub=softplus(ub),
+        #     obj=0, vtype=grb.GRB.CONTINUOUS
+        # )
 
         # xs = [lb.item(), d.item(), ub.item()]
         # ys = [softplus(lb).item(), softplus(d).item(), softplus(ub).item()]
@@ -180,54 +95,30 @@ class SoftplusRelaxation(ActivationRelaxation):
         second_half_b = mid_point[1] - second_half_m * mid_point[0]
         second_half = (second_half_m, second_half_b)
 
-        max_v = grb_model.addVar(
-            lb=softplus(lb), ub=softplus(ub),
-            obj=0, vtype=grb.GRB.CONTINUOUS,
-            name="u_theta_softplus_max_{layer_idx}_{neuron_idx}"
-        )
-        first_half_line = grb_model.addVar(
-            lb=softplus(lb), ub=softplus(ub),
-            obj=0, vtype=grb.GRB.CONTINUOUS,
-            name="u_theta_softplus_first_half_{layer_idx}_{neuron_idx}"
-        )
-        second_half_line = grb_model.addVar(
-            lb=softplus(lb), ub=softplus(ub),
-            obj=0, vtype=grb.GRB.CONTINUOUS,
-            name="u_theta_softplus_second_half_{layer_idx}_{neuron_idx}"
-        )
-        grb_model.addConstr(first_half_line == first_half[0].item() * input_var + first_half[1].item())
-        grb_model.addConstr(second_half_line == second_half[0].item() * input_var + second_half[1].item())
-        grb_model.addConstr(max_v == grb.max_(first_half_line, second_half_line))
-        grb_model.addConstr(output_var <= max_v)
-
-        # import numpy as np
-        # import matplotlib.pyplot as plt
-        # x = torch.linspace(-5, 5, 1000)
-        # y = torch.nn.Softplus()(x)
-        # plt.plot(x, y)
-
-        # x_1 = torch.linspace(lb, ub, 250)
-        # for lb_line in lb_lines:
-        #     y_lb = lb_line[0] * x_1 + lb_line[1]
-        #     plt.plot(x_1, y_lb, c="g")
-
-        
-        # y_ub_0 = first_half[0] * x_1 + first_half[1]
-        # y_ub_1 = second_half[0] * x_1 + second_half[1]
-        # plt.plot(x_1, np.maximum(y_ub_0, y_ub_1))
-        # plt.show()
-
-        # grb_model.update()
-
-        # grb_model.setObjective(output_var, grb.GRB.MINIMIZE)
-        # grb_model.update()
-        # grb_model.reset()
-        # grb_model.optimize()
-
-        # import pdb
-        # pdb.set_trace()
+        # max_v = grb_model.addVar(
+        #     lb=softplus(lb), ub=softplus(ub),
+        #     obj=0, vtype=grb.GRB.CONTINUOUS,
+        #     name="u_theta_softplus_max_{layer_idx}_{neuron_idx}"
+        # )
+        # first_half_line = grb_model.addVar(
+        #     lb=softplus(lb), ub=softplus(ub),
+        #     obj=0, vtype=grb.GRB.CONTINUOUS,
+        #     name="u_theta_softplus_first_half_{layer_idx}_{neuron_idx}"
+        # )
+        # second_half_line = grb_model.addVar(
+        #     lb=softplus(lb), ub=softplus(ub),
+        #     obj=0, vtype=grb.GRB.CONTINUOUS,
+        #     name="u_theta_softplus_second_half_{layer_idx}_{neuron_idx}"
+        # )
+        # grb_model.addConstr(first_half_line == first_half[0].item() * input_var + first_half[1].item())
+        # grb_model.addConstr(second_half_line == second_half[0].item() * input_var + second_half[1].item())
+        # grb_model.addConstr(max_v == grb.max_(first_half_line, second_half_line))
+        # grb_model.addConstr(output_var <= max_v)
 
         return lb_lines, [first_half, second_half]
+    
+    def get_lb_ub_in_interval(self, lb: torch.tensor, ub: torch.tensor) -> Tuple[torch.tensor, torch.tensor]:
+        return self.evaluate(lb), self.evaluate(ub)
 
 
 class SigmoidRelaxation(ActivationRelaxation):
@@ -244,7 +135,7 @@ class SigmoidRelaxation(ActivationRelaxation):
     def sigmoid_derivative(x):
         return sigmoid(x) * (1 - sigmoid(x))
 
-    def single_line_relaxation(self, grb_model: grb.Model, input_var: grb.Var, output_var: grb.Var, lb: torch.tensor, ub: torch.tensor) -> line_type:
+    def single_line_relaxation(self, lb: torch.tensor, ub: torch.tensor) -> line_type:
         def np_sigmoid(x):
             return 1 / (1 + np.exp(-x))
 
@@ -310,19 +201,10 @@ class SigmoidRelaxation(ActivationRelaxation):
         lb_line = (lb_line_m, lb_line_b)
         ub_line = (ub_line_m, ub_line_b)
 
-        self.add_linear_lb(grb_model, input_var, output_var, lb_line)
-        self.add_linear_ub(grb_model, input_var, output_var, ub_line)
-
         return lb_line, ub_line
     
-    def multi_line_relaxation(self, grb_model: grb.Model, input_var: grb.Var, output_var: grb.Var, lb: torch.tensor, ub: torch.tensor) -> Tuple[List[line_type], List[line_type]]:
-        raise NotImplementedError
-    
-    def quadratic_relaxation(self, grb_model: grb.Model, input_var: grb.Var, output_var: grb.Var, lb: torch.tensor, ub: torch.tensor) -> quadratic_type:
-        raise NotImplementedError
-
-    def piecewise_linear_relaxation(self, grb_model: grb.Model, input_var: grb.Var, output_var: grb.Var, lb: torch.tensor, ub: torch.tensor):
-        raise NotImplementedError
+    def get_lb_ub_in_interval(self, lb: torch.tensor, ub: torch.tensor) -> Tuple[torch.tensor, torch.tensor]:
+        return self.evaluate(lb), self.evaluate(ub)
 
 
 class SigmoidDerivativeRelaxation(ActivationRelaxation):
@@ -343,7 +225,7 @@ class SigmoidDerivativeRelaxation(ActivationRelaxation):
     def sigmoid_derivative_derivative(x):
         return sigmoid(x) * (1 - sigmoid(x)) * (1 - 2 * sigmoid(x))
 
-    def multi_line_relaxation(self, grb_model: grb.Model, input_var: grb.Var, output_var: grb.Var, lb: torch.tensor, ub: torch.tensor) -> Tuple[List[line_type], List[line_type]]:
+    def multi_line_relaxation(self, lb: torch.tensor, ub: torch.tensor) -> Tuple[List[line_type], List[line_type]]:
         ub_lines = []
         lb_lines = []
 
@@ -446,83 +328,14 @@ class SigmoidDerivativeRelaxation(ActivationRelaxation):
                 ub_m = (self.sigmoid_derivative(ub) - 0.3)/ub
                 ub_b = self.sigmoid_derivative(ub) - ub_m * ub
                 ub_lines.append((ub_m, ub_b))
-        
-        # import matplotlib.pyplot as plt
-
-        # sigmoid = torch.nn.Sigmoid()
-
-        # def sigmoid_derivative(x):
-        #     return sigmoid(x) * (1 - sigmoid(x))
-
-        # def sigmoid_derivative_derivative(x):
-        #     return sigmoid(x) * (1 - sigmoid(x)) * (1 - 2 * sigmoid(x))
-
-        # x = torch.linspace(-5, 5, 1000)
-        # y = sigmoid_derivative(x)
-        # plt.plot(x, y, c="b")
-
-        # lb = torch.tensor(lb, dtype=torch.float)
-        # ub = torch.tensor(ub, dtype=torch.float)
-        # x_1 = torch.linspace(lb, ub, 250)
-
-        # for lb_line in lb_lines:
-        #     y_lb = lb_line[0] * x_1 + lb_line[1]
-        #     plt.plot(x_1, y_lb, c='r')
-
-        # for ub_line in ub_lines:
-        #     y_ub = ub_line[0] * x_1 + ub_line[1]
-        #     plt.plot(x_1, y_ub, c='g')
-
-        # plt.show()
-
-        # import pdb
-        # pdb.set_trace()
-
-        for lb_line in lb_lines:
-            self.add_linear_lb(grb_model, input_var, output_var, lb_line)
-        
-        for ub_line in ub_lines:
-            self.add_linear_ub(grb_model, input_var, output_var, ub_line)
 
         return lb_lines, ub_lines
-    
-    def single_line_relaxation(self, grb_model: grb.Model, input_var: grb.Var, output_var: grb.Var, lb: torch.tensor, ub: torch.tensor) -> Tuple[List[line_type], List[line_type]]:
-        raise NotImplementedError
-    
-    def quadratic_relaxation(self, grb_model: grb.Model, input_var: grb.Var, output_var: grb.Var, lb: torch.tensor, ub: torch.tensor) -> quadratic_type:
-        raise NotImplementedError
-
-    def piecewise_linear_relaxation(self, grb_model: grb.Model, input_var: grb.Var, output_var: grb.Var, lb: torch.tensor, ub: torch.tensor):
-        raise NotImplementedError
 
     def get_lb_ub_in_interval(self, lb: torch.tensor, ub: torch.tensor) -> Tuple[torch.tensor, torch.tensor]:
-        out_lb = min(self.sigmoid_derivative(lb), self.sigmoid_derivative(ub))
+        out_lb = min(self.evaluate(lb), self.evaluate(ub))
         if lb == ub:
             return out_lb, out_lb
 
-        out_ub = -optimize.minimize(lambda x: -self.sigmoid_derivative(torch.tensor(x)).item(), bounds=[(lb, ub)], x0=(lb+ub)/2).fun + 1e-3
+        out_ub = -optimize.minimize(lambda x: -self.evaluate(torch.tensor(x)).item(), bounds=[(lb, ub)], x0=(lb+ub)/2).fun + 1e-3
 
         return out_lb, out_ub
-
-
-def plot_upper_lower_bounds(activation_relax: ActivationRelaxation, lb: float, ub: float, lb_lines: List[line_type], ub_lines: List[line_type]):
-    import matplotlib.pyplot as plt
-
-    x = torch.linspace(min([-5, lb]), max([5, ub]), 1000)
-    if isinstance(activation_relax, SoftplusRelaxation): 
-        y = softplus(x)
-    elif isinstance(activation_relax, SigmoidRelaxation):
-        y = sigmoid(x)
-
-    plt.plot(x, y, c="b")
-
-    x_1 = torch.linspace(lb, ub, 250)
-    for lb_line in lb_lines:
-        y_lb = lb_line[0] * x_1 + lb_line[1]
-        plt.plot(x_1, y_lb, c="g")
-
-    for ub_line in ub_lines:
-        y_ub = ub_line[0] * x_1 + ub_line[1]
-        plt.plot(x_1, y_ub, c="r")
-
-    plt.show()

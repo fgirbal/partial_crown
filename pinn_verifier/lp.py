@@ -8,16 +8,15 @@ import torch
 import gurobipy as grb
 
 from tools.custom_torch_modules import Add, Mul
-from .activation_relaxations import ActivationRelaxationType, ActivationRelaxation, SoftplusRelaxation, SigmoidRelaxation, SigmoidDerivativeRelaxation
+from pinn_verifier.activations.activation_relaxations import ActivationRelaxationType, ActivationRelaxation
 
-gurobi_env = grb.Env()
 N_THREADS = 8
 supported_normalization_ops = [Add, Mul]
-supported_activations = [torch.nn.Softplus]
+supported_activations = [torch.nn.Softplus, torch.nn.Tanh]
 
 
 def new_gurobi_model(name, feasibility_tol=1e-6, optimality_tol=1e-6):
-    grb_model = grb.Model(name, env=gurobi_env)
+    grb_model = grb.Model(name)
     grb_model.setParam('OutputFlag', False)
     grb_model.setParam('Threads', N_THREADS)
     grb_model.setParam('FeasibilityTol', feasibility_tol)
@@ -60,9 +59,17 @@ def solve_for_lower_upper_bound_var(grb_model: grb.Model, variable: grb.Var):
     grb_model.reset()
     grb_model.optimize()
 
-    if grb_model.status != 2:
-        import pdb
-        pdb.set_trace()
+    while grb_model.status != 2:
+        print(f"Warning: min optimization failed for variable '{variable.VarName}' and {N_THREADS} threads...")
+        print(f"----- Increasing FeasibilityTol to {grb_model.params.FeasibilityTol * 10}")
+        grb_model.setParam("FeasibilityTol", grb_model.params.FeasibilityTol * 10)
+
+        grb_model.reset()
+        grb_model.optimize()
+
+        if grb_model.params.FeasibilityTol >= 1e-3:
+            import pdb
+            pdb.set_trace()
 
     out_lb = variable.X
 
@@ -71,9 +78,17 @@ def solve_for_lower_upper_bound_var(grb_model: grb.Model, variable: grb.Var):
     grb_model.reset()
     grb_model.optimize()
 
-    if grb_model.status != 2:
-        import pdb
-        pdb.set_trace()
+    while grb_model.status != 2:
+        print(f"Warning: max optimization failed for variable '{variable.VarName}' and {N_THREADS} threads...")
+        print(f"----- Increasing FeasibilityTol to {grb_model.params.FeasibilityTol * 10}")
+        grb_model.setParam("FeasibilityTol", grb_model.params.FeasibilityTol * 10)
+
+        grb_model.reset()
+        grb_model.optimize()
+
+        if grb_model.params.FeasibilityTol >= 1e-3:
+            import pdb
+            pdb.set_trace()
 
     out_ub = variable.X
 
@@ -83,13 +98,13 @@ def solve_for_lower_upper_bound_var(grb_model: grb.Model, variable: grb.Var):
     return out_lb, out_ub
 
 
-class PINNSolution():
-    def __init__(self, model: List[torch.nn.Module], activation_relaxation: ActivationRelaxation = SoftplusRelaxation(ActivationRelaxationType.MULTI_LINE), feasibility_tol: float = 1e-6, optimality_tol: float = 1e-6) -> None:
-        # class used to represent a PINNSolution
+class LPPINNSolution():
+    def __init__(self, model: List[torch.nn.Module], activation_relaxation: ActivationRelaxation, feasibility_tol: float = 1e-6, optimality_tol: float = 1e-6) -> None:
+        # class used to represent a LPPINNSolution
         # currently supported model is a fully connected network with a few normalization layers (Add and Mul only)
         if not self.is_model_supported(model):
             raise ValueError(
-                "model passed to PINNSolution is not supported in current implementation"
+                "model passed to LPPINNSolution is not supported in current implementation"
             )
         
         self.layers = model
@@ -173,6 +188,50 @@ class PINNSolution():
         fc_layers = layers[len(norm_layers):]
 
         return norm_layers, fc_layers
+    
+    def compute_IBP_bounds(self, debug: bool = True):
+        domain_bounds = self.domain_bounds
+
+        # apply normalization layers on the bounds
+        for layer in self.norm_layers:
+            domain_bounds = layer(domain_bounds)
+            
+            if type(layer) == Mul:
+                # a multiplication can change the direction of the bounds, sort them accordingly
+                domain_bounds = domain_bounds.sort(dim=0).values
+
+        # interval analysis
+        current_lb = domain_bounds[0]
+        current_ub = domain_bounds[1]
+
+        self.lower_bounds.append(current_lb)
+        self.upper_bounds.append(current_ub)
+
+        it_object = self.fc_layers
+        if debug:
+            print("Propagating IBP bounds through u_theta...")
+            it_object = tqdm(self.fc_layers)
+
+        for layer in it_object:
+            if isinstance(layer, torch.nn.Linear):
+                # bound it from the top and bottom
+                pos_weights = torch.clamp(layer.weight, min=0)
+                neg_weights = torch.clamp(layer.weight, max=0)
+
+                new_layer_lb = pos_weights @ current_lb + neg_weights @ current_ub + layer.bias
+                new_layer_ub = pos_weights @ current_ub + neg_weights @ current_lb + layer.bias
+                
+                current_lb = new_layer_lb
+                current_ub = new_layer_ub
+            elif isinstance(layer, torch.nn.Tanh):
+                # monotonicity of tanh means we can simply apply the operation to the bounds
+                current_lb = layer(current_lb)
+                current_ub = layer(current_ub)
+
+            assert all(current_lb <= current_ub)
+
+            self.lower_bounds.append(current_lb)
+            self.upper_bounds.append(current_ub)
 
     def compute_bounds(self, debug: bool = True):
         # if the bounds are already computed, simply add the variables to the problem without re-computing, otherwise compute the bounds along the way 
@@ -211,7 +270,7 @@ class PINNSolution():
 
         it_object = self.fc_layers
         if debug:
-            print("Propagating bounds through u_theta...")
+            print("Propagating LP bounds through u_theta...")
             it_object = tqdm(self.fc_layers)
 
         # apply bounds on the fully connected layers
@@ -254,11 +313,15 @@ class PINNSolution():
                     pre_ub_neuron = pre_ub[neuron_idx]
 
                     # compute the new lower bound and upper bound using the exact function
-                    out_lb = layer(pre_lb_neuron)
-                    out_ub = layer(pre_ub_neuron)
-                    
+                    # out_lb = layer(pre_lb_neuron)
+                    # out_ub = layer(pre_ub_neuron)
+
+                    out_lb, out_ub = self.activation_relaxation.get_lb_ub_in_interval(
+                        pre_lb_neuron, pre_ub_neuron
+                    )
+
                     v = add_var_to_model(grb_model, out_lb, out_ub, f'u_theta_sigma_{layer_idx}_{neuron_idx}')
-                    self.activation_relaxation.relax(grb_model, pre_var, v, pre_lb_neuron, pre_ub_neuron)
+                    self.activation_relaxation.relax_lp(grb_model, pre_var, v, pre_lb_neuron, pre_ub_neuron)
 
                     new_layer_lb.append(out_lb)
                     new_layer_ub.append(out_ub)
@@ -327,11 +390,15 @@ class PINNSolution():
                     pre_ub_neuron = pre_ub[neuron_idx]
 
                     # compute the new lower bound and upper bound using the exact function
-                    out_lb = layer(pre_lb_neuron)
-                    out_ub = layer(pre_ub_neuron)
+                    # out_lb = layer(pre_lb_neuron)
+                    # out_ub = layer(pre_ub_neuron)
+
+                    out_lb, out_ub = self.activation_relaxation.get_lb_ub_in_interval(
+                        pre_lb_neuron, pre_ub_neuron
+                    )
                     
                     v = add_var_to_model(grb_model, out_lb, out_ub, f'u_theta_sigma_{layer_idx}_{neuron_idx}')
-                    self.activation_relaxation.relax(grb_model, pre_var, v, pre_lb_neuron, pre_ub_neuron)
+                    self.activation_relaxation.relax_lp(grb_model, pre_var, v, pre_lb_neuron, pre_ub_neuron)
 
                     new_layer_gurobi_vars.append(v)
             
@@ -342,8 +409,8 @@ class PINNSolution():
         return gurobi_vars
 
 
-class PINNPartialDerivative():
-    def __init__(self, pinn_solution: PINNSolution, component_idx: int, activation_derivative_relaxation: ActivationRelaxation = SigmoidRelaxation(ActivationRelaxationType.SINGLE_LINE)) -> None:
+class LPPINNPartialDerivative():
+    def __init__(self, pinn_solution: LPPINNSolution, component_idx: int, activation_derivative_relaxation: ActivationRelaxation) -> None:
         # class used to compute the bounds of the derivative of the PINN; it operates over the model defined in pinn.grb_model
         self.u_theta = pinn_solution
 
@@ -419,7 +486,7 @@ class PINNPartialDerivative():
 
         it_object = self.u_theta.fc_layers
         if debug:
-            print(f"Propagating bounds through du_theta/dx{self.component_idx}...")
+            print(f"Propagating LP bounds through du_theta/dx{self.component_idx}...")
             it_object = tqdm(self.u_theta.fc_layers)
 
         for layer_idx, layer in enumerate(it_object):
@@ -428,8 +495,8 @@ class PINNPartialDerivative():
             new_layer_ub = []
             new_layer_gurobi_vars = []
 
-            # softplus are subsumed in the gradient of the linear layers
-            if isinstance(layer, torch.nn.Softplus):
+            # activations are subsumed in the gradient of the linear layers
+            if type(layer) in supported_activations:
                 continue
 
             assert isinstance(layer, torch.nn.Linear)
@@ -453,8 +520,12 @@ class PINNPartialDerivative():
                     u_theta_pre_act_neuron_lb = u_theta_pre_activation_lbs[neuron_idx]
                     u_theta_pre_act_neuron_ub = u_theta_pre_activation_ubs[neuron_idx]
                     
-                    neuron_sigma_prime_lb = self.activation_derivative_relaxation.evaluate(u_theta_pre_act_neuron_lb)
-                    neuron_sigma_prime_ub = self.activation_derivative_relaxation.evaluate(u_theta_pre_act_neuron_ub)
+                    # neuron_sigma_prime_lb = self.activation_derivative_relaxation.evaluate(u_theta_pre_act_neuron_lb)
+                    # neuron_sigma_prime_ub = self.activation_derivative_relaxation.evaluate(u_theta_pre_act_neuron_ub)
+
+                    neuron_sigma_prime_lb, neuron_sigma_prime_ub = self.activation_derivative_relaxation.get_lb_ub_in_interval(
+                        u_theta_pre_act_neuron_lb, u_theta_pre_act_neuron_ub
+                    )
 
                     neuron_sigma_prime = add_var_to_model(
                         grb_model,
@@ -464,7 +535,7 @@ class PINNPartialDerivative():
                     )
 
                     # relax the derivative of the relaxation
-                    self.activation_derivative_relaxation.relax(
+                    self.activation_derivative_relaxation.relax_lp(
                         grb_model,
                         u_theta_pre_act_var,
                         neuron_sigma_prime,
@@ -535,7 +606,6 @@ class PINNPartialDerivative():
 
                         # exact modeling - non-convex
                         # grb_model.addConstr(jth_out_var == first_matmul_vars[out_neuron_idx][j] * u_dxi_pre_vars[j])
-
                         mccormick_relaxation(
                             grb_model,
                             input_var_1=first_matmul_vars[out_neuron_idx][j],
@@ -568,7 +638,7 @@ class PINNPartialDerivative():
                     new_layer_lb.append(out_lb)
                     new_layer_ub.append(out_ub)
             else:
-                # it's the last layer, there's no softplus, just the linear part
+                # it's the last layer, there's no activations, just the linear part
                 u_dxi_lbs = u_dxi_lower_bounds[-1]
                 u_dxi_ubs = u_dxi_upper_bounds[-1]
                 u_dxi_pre_vars = u_dxi_gurobi_vars[-1]
@@ -598,8 +668,8 @@ class PINNPartialDerivative():
                     new_layer_gurobi_vars.append(final_var)
 
             u_dxi_gurobi_vars.append(new_layer_gurobi_vars)
-            u_dxi_lower_bounds.append(torch.tensor(new_layer_lb))
-            u_dxi_upper_bounds.append(torch.tensor(new_layer_ub))
+            u_dxi_lower_bounds.append(torch.Tensor(new_layer_lb))
+            u_dxi_upper_bounds.append(torch.Tensor(new_layer_ub))
 
         self.computed_bounds = True
 
@@ -647,8 +717,8 @@ class PINNPartialDerivative():
             is_final = (layer_idx == len(self.u_theta.fc_layers) - 1)
             new_layer_gurobi_vars = []
 
-            # softplus are subsumed in the gradient of the linear layers
-            if isinstance(layer, torch.nn.Softplus):
+            # activations are subsumed in the gradient of the linear layers
+            if type(layer) in supported_activations:
                 continue
 
             assert isinstance(layer, torch.nn.Linear)
@@ -669,8 +739,12 @@ class PINNPartialDerivative():
                     u_theta_pre_act_neuron_lb = u_theta_pre_activation_lbs[neuron_idx]
                     u_theta_pre_act_neuron_ub = u_theta_pre_activation_ubs[neuron_idx]
                     
-                    neuron_sigma_prime_lb = self.activation_derivative_relaxation.evaluate(u_theta_pre_act_neuron_lb)
-                    neuron_sigma_prime_ub = self.activation_derivative_relaxation.evaluate(u_theta_pre_act_neuron_ub)
+                    # neuron_sigma_prime_lb = self.activation_derivative_relaxation.evaluate(u_theta_pre_act_neuron_lb)
+                    # neuron_sigma_prime_ub = self.activation_derivative_relaxation.evaluate(u_theta_pre_act_neuron_ub)
+
+                    neuron_sigma_prime_lb, neuron_sigma_prime_ub = self.activation_derivative_relaxation.get_lb_ub_in_interval(
+                        u_theta_pre_act_neuron_lb, u_theta_pre_act_neuron_ub
+                    )
 
                     neuron_sigma_prime = add_var_to_model(
                         grb_model,
@@ -680,7 +754,7 @@ class PINNPartialDerivative():
                     )
 
                     # relax the derivative of the relaxation
-                    self.activation_derivative_relaxation.relax(
+                    self.activation_derivative_relaxation.relax_lp(
                         grb_model,
                         u_theta_pre_act_var,
                         neuron_sigma_prime,
@@ -779,7 +853,7 @@ class PINNPartialDerivative():
 
                     new_layer_gurobi_vars.append(out_var)
             else:
-                # it's the last layer, there's no softplus, just the linear part
+                # it's the last layer, there's no activations, just the linear part
                 u_dxi_out_lbs = u_dxi_lower_bounds[-1]
                 u_dxi_out_ubs = u_dxi_upper_bounds[-1]
                 u_dxi_pre_vars = u_dxi_gurobi_vars[int(layer_idx / 2)]
@@ -803,8 +877,8 @@ class PINNPartialDerivative():
         return [u_theta_gurobi_vars], [u_dxi_gurobi_vars, d_phi_m_d_phi_m_1_gurobi_vars]
 
 
-class PINNSecondPartialDerivative():
-    def __init__(self, pinn_partial_derivative: PINNPartialDerivative, component_idx: int, activation_derivative_derivative_relaxation: ActivationRelaxation = SigmoidDerivativeRelaxation(ActivationRelaxationType.MULTI_LINE)) -> None:
+class LPPINNSecondPartialDerivative():
+    def __init__(self, pinn_partial_derivative: LPPINNPartialDerivative, component_idx: int, activation_derivative_derivative_relaxation: ActivationRelaxation) -> None:
         # class used to compute the bounds of the second derivative of the PINN; it operates over the model defined in pinn_partial_derivative.u_theta.grb_model
         self.partial_derivative = pinn_partial_derivative
         self.u_theta = pinn_partial_derivative.u_theta
@@ -869,7 +943,7 @@ class PINNSecondPartialDerivative():
 
         it_object = self.u_theta.fc_layers
         if debug:
-            print(f"Propagating bounds through d^2u_theta/dx{self.component_idx}^2...")
+            print(f"Propagating LP bounds through d^2u_theta/dx{self.component_idx}^2...")
             it_object = tqdm(self.u_theta.fc_layers)
 
         for layer_idx, layer in enumerate(it_object):
@@ -878,8 +952,8 @@ class PINNSecondPartialDerivative():
             new_layer_ub = []
             new_layer_gurobi_vars = []
 
-            # softplus are subsumed in the gradient of the linear layers
-            if isinstance(layer, torch.nn.Softplus):
+            # activations are subsumed in the gradient of the linear layers
+            if type(layer) in supported_activations:
                 continue
 
             assert isinstance(layer, torch.nn.Linear)
@@ -942,7 +1016,7 @@ class PINNSecondPartialDerivative():
                     )
 
                     # relax the derivative of the relaxation
-                    self.activation_derivative_derivative_relaxation.relax(
+                    self.activation_derivative_derivative_relaxation.relax_lp(
                         grb_model,
                         u_theta_pre_act_var,
                         neuron_sigma_prime_prime,
@@ -1174,7 +1248,7 @@ class PINNSecondPartialDerivative():
                     new_layer_ub.append(out_ub)
                     new_layer_gurobi_vars.append(out_i)
             else:
-                # it's the last layer, there's no softplus, just the linear part
+                # it's the last layer, there's no activations, just the linear part
                 u_dxixi_lbs = u_dxixi_lower_bounds[-1]
                 u_dxixi_ubs = u_dxixi_upper_bounds[-1]
                 u_dxixi_pre_vars = u_dxixi_gurobi_vars[-1]
@@ -1204,8 +1278,8 @@ class PINNSecondPartialDerivative():
                     new_layer_gurobi_vars.append(final_var)
 
             u_dxixi_gurobi_vars.append(new_layer_gurobi_vars)
-            u_dxixi_lower_bounds.append(torch.tensor(new_layer_lb))
-            u_dxixi_upper_bounds.append(torch.tensor(new_layer_ub))
+            u_dxixi_lower_bounds.append(torch.Tensor(new_layer_lb))
+            u_dxixi_upper_bounds.append(torch.Tensor(new_layer_ub))
 
         self.computed_bounds = True
 
@@ -1243,8 +1317,8 @@ class PINNSecondPartialDerivative():
             is_final = (layer_idx == len(self.u_theta.fc_layers) - 1)
             new_layer_gurobi_vars = []
 
-            # softplus are subsumed in the gradient of the linear layers
-            if isinstance(layer, torch.nn.Softplus):
+            # activations are subsumed in the gradient of the linear layers
+            if type(layer) in supported_activations:
                 continue
 
             assert isinstance(layer, torch.nn.Linear)
@@ -1308,7 +1382,7 @@ class PINNSecondPartialDerivative():
                     )
 
                     # relax the derivative of the relaxation
-                    self.activation_derivative_derivative_relaxation.relax(
+                    self.activation_derivative_derivative_relaxation.relax_lp(
                         grb_model,
                         u_theta_pre_act_var,
                         neuron_sigma_prime_prime,
@@ -1505,7 +1579,7 @@ class PINNSecondPartialDerivative():
 
                     new_layer_gurobi_vars.append(out_i)
             else:
-                # it's the last layer, there's no softplus, just the linear part
+                # it's the last layer, there's no activations, just the linear part
                 u_dxixi_pre_vars = u_dxixi_gurobi_vars[-1]
 
                 u_dxixi_lower_bounds_layer = u_dxixi_lower_bounds[-1]
@@ -1530,13 +1604,34 @@ class PINNSecondPartialDerivative():
         return [u_theta_gurobi_vars], [u_dxi_gurobi_vars, d_phi_m_d_phi_m_1_gurobi_vars], [u_dxixi_gurobi_vars]
 
 
-class BurgersVerifier():
-    def __init__(self, model: List[torch.nn.Module], feasibility_tol: float = 1e-6, optimality_tol: float = 1e-6) -> None:
-        self.u_theta = PINNSolution(
+class LPBurgersVerifier():
+    def __init__(
+            self, model: List[torch.nn.Module], activation_relaxation: ActivationRelaxationType, 
+            activation_derivative_relaxation: ActivationRelaxationType,
+            activation_second_derivative_relaxation: ActivationRelaxationType,
+            feasibility_tol: float = 1e-6, optimality_tol: float = 1e-6
+    ) -> None:
+        self.u_theta = LPPINNSolution(
             model,
-            activation_relaxation=SoftplusRelaxation(ActivationRelaxationType.MULTI_LINE),
+            activation_relaxation=activation_relaxation,
             feasibility_tol=feasibility_tol,
             optimality_tol=optimality_tol
+        )
+
+        self.u_dt_theta = LPPINNPartialDerivative(
+            self.u_theta,
+            component_idx=0,
+            activation_derivative_relaxation=activation_derivative_relaxation
+        )
+        self.u_dx_theta = LPPINNPartialDerivative(
+            self.u_theta,
+            component_idx=1,
+            activation_derivative_relaxation=activation_derivative_relaxation
+        )
+        self.u_dxdx_theta = LPPINNSecondPartialDerivative(
+            self.u_dx_theta,
+            component_idx=1,
+            activation_derivative_derivative_relaxation=activation_second_derivative_relaxation
         )
 
     def compute_residual_bound(self, domain_bounds: torch.tensor, debug: bool = True):
@@ -1545,14 +1640,26 @@ class BurgersVerifier():
         u_theta.domain_bounds = domain_bounds
         u_theta.compute_bounds(debug=debug)
 
-        u_dt_theta = PINNPartialDerivative(u_theta, component_idx=0)
+        if debug:
+            print("u_theta bounds:", (u_theta.lower_bounds[-1], u_theta.upper_bounds[-1]))
+
+        u_dt_theta = self.u_dt_theta
         u_dt_theta.compute_bounds(debug=debug)
 
-        u_dx_theta = PINNPartialDerivative(u_theta, component_idx=1)
+        if debug:
+            print("u_dt_theta bounds:", (u_dt_theta.lower_bounds[-1], u_dt_theta.upper_bounds[-1]))
+
+        u_dx_theta = self.u_dx_theta
         u_dx_theta.compute_bounds(debug=debug)
 
-        u_dxdx_theta = PINNSecondPartialDerivative(u_dx_theta, component_idx=1)
+        if debug:
+            print("u_dx_theta bounds:", (u_dx_theta.lower_bounds[-1], u_dx_theta.upper_bounds[-1]))
+
+        u_dxdx_theta = self.u_dxdx_theta
         u_dxdx_theta.compute_bounds(debug=debug)
+
+        if debug:
+            print("u_dxdx_theta bounds:", (u_dxdx_theta.lower_bounds[-1], u_dxdx_theta.upper_bounds[-1]))
 
         # create a problem with all intermediate bounds to solve for the residual
         grb_model = new_gurobi_model(
@@ -1581,10 +1688,6 @@ class BurgersVerifier():
             u_dxi_theta_all_vars=u_dx_theta_all_vars
         )
         u_dxdx_theta_gurobi_vars = u_dxdx_theta_all_vars[0]
-
-        self.u_dt_theta = u_dt_theta
-        self.u_dx_theta = u_dx_theta
-        self.u_dxdx_theta = u_dxdx_theta
 
         # the PINN is given by u_dt_theta + u_theta * u_dx_theta - 0.01/np.pi * u_dxdx_theta
         u_theta_u_dx_theta_mul_lb, u_theta_u_dx_theta_mul_ub = get_multiplication_bounds(
@@ -1644,4 +1747,3 @@ class BurgersVerifier():
         out_ub = residual.X
 
         return out_lb, out_ub
-

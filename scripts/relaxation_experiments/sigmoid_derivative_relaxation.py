@@ -84,12 +84,12 @@ def compute_lower_upper_bounds_lines(lb, ub, ub_line_ub_bias=0.9, lb_line_ub_bia
                 lb_lines.append((lb_m, lb_b))
 
             # ub_lines
-            ub_m = ((sigmoid_derivative(lb) - 0.3)/lb).item()
+            ub_m = ((sigmoid_derivative(lb) - b_intersect)/lb).item()
             ub_b = sigmoid_derivative(lb) - ub_m * lb
             ub_lines.append((ub_m, ub_b))
 
             if ub > 0:
-                ub_m = ((sigmoid_derivative(ub) - 0.3)/ub).item()
+                ub_m = ((sigmoid_derivative(ub) - b_intersect)/ub).item()
                 ub_b = sigmoid_derivative(ub) - ub_m * ub
                 ub_lines.append((ub_m, ub_b))
         elif in_region(lb, concave_region) and in_region(ub, second_convex_region):
@@ -104,11 +104,11 @@ def compute_lower_upper_bounds_lines(lb, ub, ub_line_ub_bias=0.9, lb_line_ub_bia
 
             # ub_lines
             if lb < 0:
-                ub_m = ((sigmoid_derivative(lb) - 0.3)/lb).item()
+                ub_m = ((sigmoid_derivative(lb) - b_intersect)/lb).item()
                 ub_b = sigmoid_derivative(lb) - ub_m * lb
                 ub_lines.append((ub_m, ub_b))
 
-            ub_m = ((sigmoid_derivative(ub) - 0.3)/ub).item()
+            ub_m = ((sigmoid_derivative(ub) - b_intersect)/ub).item()
             ub_b = sigmoid_derivative(ub) - ub_m * ub
             ub_lines.append((ub_m, ub_b))
         # are they in the two convex regions?
@@ -124,11 +124,11 @@ def compute_lower_upper_bounds_lines(lb, ub, ub_line_ub_bias=0.9, lb_line_ub_bia
                 lb_lines.append((lb_m, lb_b))
 
             # ub_lines
-            ub_m = ((sigmoid_derivative(lb) - 0.3)/lb).item()
+            ub_m = ((sigmoid_derivative(lb) - b_intersect)/lb).item()
             ub_b = sigmoid_derivative(lb) - ub_m * lb
             ub_lines.append((ub_m, ub_b))
 
-            ub_m = ((sigmoid_derivative(ub) - 0.3)/ub).item()
+            ub_m = ((sigmoid_derivative(ub) - b_intersect)/ub).item()
             ub_b = sigmoid_derivative(ub) - ub_m * ub
             ub_lines.append((ub_m, ub_b))
 
@@ -141,11 +141,6 @@ fig, ax = plt.subplots()
 x = torch.linspace(-5, 5, 1000)
 y = sigmoid_derivative(x)
 plt.plot(x, y, c="b")
-
-# y = sigmoid_derivative_derivative(x)
-# plt.plot(x, y)
-
-
 
 lb = torch.tensor(args.lb, dtype=torch.float)
 ub = torch.tensor(args.ub, dtype=torch.float)

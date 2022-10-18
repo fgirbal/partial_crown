@@ -184,7 +184,7 @@ if __name__ == "__main__":
     if args.optimizer == "adam":
         optim = torch.optim.Adam(model.parameters(), lr=0.01)
         # optim = torch.optim.SGD(model.parameters(), lr=0.01)
-        scheduler = torch.optim.lr_scheduler.MultiStepLR(optim, [1500, 8000], gamma=0.1)
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(optim, [2000, 10000], gamma=0.1)
         # scheduler = torch.optim.lr_scheduler.MultiStepLR(optim, [1000], gamma=0.1)
     elif args.optimizer == "lbfgs":
         optim = torch.optim.LBFGS(
@@ -200,37 +200,47 @@ if __name__ == "__main__":
         scheduler = None
 
     # Number of training epochs
-    N = 10000
+    N = 12500
     hist = []
 
-    for epoch in range(N+1):
-        if args.optimizer == "adam":
+    if args.optimizer == "adam":
+        for epoch in range(N+1):
             optim.zero_grad()
             loss = compute_loss(model, X_r, X_data, u_data, residual_fn)
             loss.backward()
             
             optim.step()
-        else:
-            def closure():
-                optim.zero_grad()
-                loss = compute_loss(model, X_r, X_data, u_data, residual_fn)
-                loss.backward()
-                return loss
+            
+            # Append current loss to hist
+            hist.append(loss.detach().numpy())
+            
+            # Output current loss after 50 iterates
+            if epoch % 50 == 0:
+                if scheduler:
+                    print(f'Iteration {epoch}: loss = {loss}, lr = {scheduler.get_last_lr()[0]}')
+                else:
+                    print(f'Iteration {epoch}: loss = {loss}')
 
-            loss = optim.step(closure)
-        
-        # Append current loss to hist
-        hist.append(loss.detach().numpy())
-        
-        # Output current loss after 50 iterates
-        if epoch % 50 == 0:
             if scheduler:
-                print(f'Iteration {epoch}: loss = {loss}, lr = {scheduler.get_last_lr()[0]}')
-            else:
-                print(f'Iteration {epoch}: loss = {loss}')
+                scheduler.step()
+    else:
+        global iter
+        iter = 0
 
-        if scheduler:
-            scheduler.step()
+        def loss_function_closure():
+            optim.zero_grad()
+            loss = compute_loss(model, X_r, X_data, u_data, residual_fn)
+            loss.backward()
+            global iter
+
+            if iter % 50 == 0:
+                print(f'Iteration {iter}: loss = {loss.item()}')
+            
+            iter += 1
+
+            return loss
+
+        loss = optim.step(loss_function_closure)
 
     model.eval()
 
