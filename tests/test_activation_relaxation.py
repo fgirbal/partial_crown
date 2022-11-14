@@ -9,6 +9,7 @@ from pinn_verifier.activations import ActivationRelaxation, ActivationRelaxation
 from pinn_verifier.activations.tanh import TanhRelaxation, TanhDerivativeRelaxation, TanhSecondDerivativeRelaxation
 
 N_INTERVALS = 1000
+N_INTERVALS_LB_UB_IN_INTERVAL = 10000
 
 def activation_relaxation_bounds_included(activation_relaxation: ActivationRelaxation, lb: torch.Tensor, ub: torch.Tensor):
     lb_line, ub_line = activation_relaxation.get_bounds(lb, ub)
@@ -64,5 +65,32 @@ def test_random_tanh_second_derivative_relaxation():
 
     for i in range(N_INTERVALS):
         assert activation_relaxation_bounds_included(activation, lbs[i], ubs[i])
+
+    return True
+
+
+def lb_ub_in_interval_valid(activation_relaxation: ActivationRelaxation, lb: torch.Tensor, ub: torch.Tensor):
+    interval_lb, interval_ub = activation_relaxation.get_lb_ub_in_interval(lb, ub)
+
+    x_vals = torch.linspace(lb.item(), ub.item(), 1000, dtype=torch.float64)
+    actual_y_vals = activation_relaxation.evaluate(x_vals)
+
+    ret_val = True
+    ret_val = (actual_y_vals.min() >= interval_lb - 1e-5) & (actual_y_vals.max() <= interval_ub + 1e-5)
+
+    if not ret_val:
+        import pdb
+        pdb.set_trace()
+    
+    return ret_val
+
+def test_random_tanh_second_derivative_get_lb_ub_in_interval():
+    activation = TanhSecondDerivativeRelaxation(ActivationRelaxationType.SINGLE_LINE)
+
+    lbs = torch.FloatTensor(N_INTERVALS_LB_UB_IN_INTERVAL).uniform_(-5, 5)
+    ubs = lbs + torch.FloatTensor(N_INTERVALS_LB_UB_IN_INTERVAL).uniform_(1e-2, 10)
+
+    for i in range(N_INTERVALS_LB_UB_IN_INTERVAL):
+        assert lb_ub_in_interval_valid(activation, lbs[i], ubs[i])
 
     return True

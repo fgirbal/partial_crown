@@ -9,125 +9,130 @@ from .activation_relaxations import ActivationRelaxation, ActivationRelaxationTy
 
 tanh = torch.nn.Tanh()
 
-def get_lb_line_lb_in_convex_ub_in_concave(lb: torch.tensor, ub: torch.tensor, split_point: torch.tensor, fn: callable, fn_derivative: callable) -> Tuple[line_type, line_type]:
+# brenth_xtol = 2e-12
+# brenth_rtol = 8.881784197001252e-16
+brenth_xtol = 1e-8
+brenth_rtol = 1e-8
+
+def get_lb_line_lb_in_convex_ub_in_concave(lb: torch.tensor, ub: torch.tensor, split_point: float, np_fn: callable, np_fn_derivative: callable) -> Tuple[line_type, line_type]:
     def fn_derivative_bound_d(x, bound):
-        x_torch = torch.Tensor([x])
-        return ((fn_derivative(x_torch)) - (fn(x_torch) - fn(bound)) / (x_torch - bound))
+        return ((np_fn_derivative(x)) - (np_fn(x) - np_fn(bound)) / (x - bound))
+
+    lb = lb.numpy()
+    ub = ub.numpy()
 
     try:
-        d_lb = optimize.root_scalar(lambda d: fn_derivative_bound_d(d, ub), bracket=[lb, split_point], method='brentq').root
+        d_lb = optimize.root_scalar(lambda d: fn_derivative_bound_d(d, ub), bracket=[lb, split_point], method='brentq', xtol=brenth_xtol, rtol=brenth_rtol).root
     except:
         d_lb = split_point + 1
     
-    d_lb = torch.tensor(d_lb)
-
     if d_lb <= split_point:
     # tangent line at point d_lb
-        lb_line_m = fn_derivative(d_lb)
-        lb_line_b = fn(ub) - lb_line_m * ub
+        lb_line_m = np_fn_derivative(d_lb)
+        lb_line_b = np_fn(ub) - lb_line_m * ub
     else:
         # lb line attempts to connect upper and lower bound points
-        if (fn(ub) - fn(lb)) / (ub - lb) <= fn_derivative(lb):
-            lb_line_m = (fn(ub) - fn(lb)) / (ub - lb)
-            lb_line_b = fn(ub) - lb_line_m * ub
+        if (np_fn(ub) - np_fn(lb)) / (ub - lb) <= np_fn_derivative(lb):
+            lb_line_m = (np_fn(ub) - np_fn(lb)) / (ub - lb)
+            lb_line_b = np_fn(ub) - lb_line_m * ub
         else:
             d_1 = (lb + ub) / 2
-            lb_line_m = fn_derivative(d_1)
-            lb_line_b = fn(d_1) - lb_line_m * d_1
-    
-    return (lb_line_m, lb_line_b)
+            lb_line_m = np_fn_derivative(d_1)
+            lb_line_b = np_fn(d_1) - lb_line_m * d_1
 
-def get_ub_line_lb_in_convex_ub_in_concave(lb: torch.tensor, ub: torch.tensor, split_point: torch.tensor, fn: callable, fn_derivative: callable) -> Tuple[line_type, line_type]:
+    return (torch.tensor(lb_line_m), torch.tensor(lb_line_b))
+
+def get_ub_line_lb_in_convex_ub_in_concave(lb: torch.tensor, ub: torch.tensor, split_point: float, np_fn: callable, np_fn_derivative: callable) -> Tuple[line_type, line_type]:
     def fn_derivative_bound_d(x, bound):
-        x_torch = torch.Tensor([x])
-        return ((fn_derivative(x_torch)) - (fn(x_torch) - fn(bound)) / (x_torch - bound))
+        return ((np_fn_derivative(x)) - (np_fn(x) - np_fn(bound)) / (x - bound))
+
+    lb = lb.numpy()
+    ub = ub.numpy()
 
     try:
-        d_ub = optimize.root_scalar(lambda d: fn_derivative_bound_d(d, lb), bracket=[split_point, ub], method='brentq').root
+        d_ub = optimize.root_scalar(lambda d: fn_derivative_bound_d(d, lb), bracket=[split_point, ub], method='brentq', xtol=brenth_xtol, rtol=brenth_rtol).root
     except:
         d_ub = split_point - 1
 
-    d_ub = torch.tensor(d_ub)
-
     if d_ub >= split_point:
         # tangent line at point d_ub
-        ub_line_m = fn_derivative(d_ub)
-        ub_line_b = fn(lb) - ub_line_m * lb
+        ub_line_m = np_fn_derivative(d_ub)
+        ub_line_b = np_fn(lb) - ub_line_m * lb
     else:
         # ub line just connects upper and lower bound points
-        ub_line_m = min((fn(ub) - fn(lb)) / (ub - lb), fn_derivative(ub))
-        ub_line_b = fn(ub) - ub_line_m * ub
+        ub_line_m = min((np_fn(ub) - np_fn(lb)) / (ub - lb), np_fn_derivative(ub))
+        ub_line_b = np_fn(ub) - ub_line_m * ub
     
-    return (ub_line_m, ub_line_b)
+    return (torch.tensor(ub_line_m), torch.tensor(ub_line_b))
 
-def get_lines_lb_in_convex_ub_in_concave(lb: torch.tensor, ub: torch.tensor, split_point: torch.tensor, fn: callable, fn_derivative: callable) -> Tuple[line_type, line_type]:
+def get_lines_lb_in_convex_ub_in_concave(lb: torch.tensor, ub: torch.tensor, split_point: float, np_fn: callable, np_fn_derivative: callable) -> Tuple[line_type, line_type]:
     return (
-        get_lb_line_lb_in_convex_ub_in_concave(lb, ub, split_point, fn, fn_derivative),
-        get_ub_line_lb_in_convex_ub_in_concave(lb, ub, split_point, fn, fn_derivative)
+        get_lb_line_lb_in_convex_ub_in_concave(lb, ub, split_point, np_fn, np_fn_derivative),
+        get_ub_line_lb_in_convex_ub_in_concave(lb, ub, split_point, np_fn, np_fn_derivative)
     )
 
 
-def get_lb_line_lb_in_concave_ub_in_convex(lb: torch.tensor, ub: torch.tensor, split_point: torch.tensor, fn: callable, fn_derivative: callable) -> Tuple[line_type, line_type]:
+def get_lb_line_lb_in_concave_ub_in_convex(lb: torch.tensor, ub: torch.tensor, split_point: float, np_fn: callable, np_fn_derivative: callable) -> Tuple[line_type, line_type]:
     def fn_derivative_bound_d(x, bound):
-        x_torch = torch.Tensor([x])
-        return ((fn_derivative(x_torch)) - (fn(x_torch) - fn(bound)) / (x_torch - bound))
+        return ((np_fn_derivative(x)) - (np_fn(x) - np_fn(bound)) / (x - bound))
     
+    lb = lb.numpy()
+    ub = ub.numpy()
+
     try:
-        d_lb = optimize.root_scalar(lambda d: fn_derivative_bound_d(d, lb), bracket=[split_point, ub], method='brentq').root
+        d_lb = optimize.root_scalar(lambda d: fn_derivative_bound_d(d, lb), bracket=[split_point, ub], method='brentq', xtol=brenth_xtol, rtol=brenth_rtol).root
     except:
         d_lb = split_point - 1
-
-    d_lb = torch.tensor(d_lb)
 
     if d_lb >= split_point:
         # tangent line at point d_lb
-        lb_line_m = fn_derivative(d_lb)
-        lb_line_b = fn(lb) - lb_line_m * lb
+        lb_line_m = np_fn_derivative(d_lb)
+        lb_line_b = np_fn(lb) - lb_line_m * lb
     else:
         # lb line attempts to connect upper and lower bound points
-        if (fn(ub) - fn(lb)) / (ub - lb) <= fn_derivative(lb):
-            lb_line_m = (fn(ub) - fn(lb)) / (ub - lb)
-            lb_line_b = fn(ub) - lb_line_m * ub
+        if (np_fn(ub) - np_fn(lb)) / (ub - lb) <= np_fn_derivative(lb):
+            lb_line_m = (np_fn(ub) - np_fn(lb)) / (ub - lb)
+            lb_line_b = np_fn(ub) - lb_line_m * ub
         else:
             d_1 = (lb + ub) / 2
-            lb_line_m = fn_derivative(d_1)
-            lb_line_b = fn(d_1) - lb_line_m * d_1
+            lb_line_m = np_fn_derivative(d_1)
+            lb_line_b = np_fn(d_1) - lb_line_m * d_1
     
-    return (lb_line_m, lb_line_b)
+    return (torch.tensor(lb_line_m), torch.tensor(lb_line_b))
 
-def get_ub_line_lb_in_concave_ub_in_convex(lb: torch.tensor, ub: torch.tensor, split_point: torch.tensor, fn: callable, fn_derivative: callable) -> Tuple[line_type, line_type]:
+def get_ub_line_lb_in_concave_ub_in_convex(lb: torch.tensor, ub: torch.tensor, split_point: float, np_fn: callable, np_fn_derivative: callable) -> Tuple[line_type, line_type]:
     def fn_derivative_bound_d(x, bound):
-        x_torch = torch.Tensor([x])
-        return ((fn_derivative(x_torch)) - (fn(x_torch) - fn(bound)) / (x_torch - bound))
+        return ((np_fn_derivative(x)) - (np_fn(x) - np_fn(bound)) / (x - bound))
     
+    lb = lb.numpy()
+    ub = ub.numpy()
+
     try:
-        d_ub = optimize.root_scalar(lambda d: fn_derivative_bound_d(d, ub), bracket=[lb, split_point], method='brentq').root
+        d_ub = optimize.root_scalar(lambda d: fn_derivative_bound_d(d, ub), bracket=[lb, split_point], method='brentq', xtol=brenth_xtol, rtol=brenth_rtol).root
     except:
         d_ub = split_point + 1
 
-    d_ub = torch.tensor(d_ub)
-
     if d_ub <= split_point:
         # tangent line at point d_ub
-        ub_line_m = fn_derivative(d_ub)
-        ub_line_b = fn(ub) - ub_line_m * ub
+        ub_line_m = np_fn_derivative(d_ub)
+        ub_line_b = np_fn(ub) - ub_line_m * ub
     else:
         # ub line just connects upper and lower bound points
-        ub_line_m = (fn(ub) - fn(lb)) / (ub - lb)
-        ub_line_b = fn(ub) - ub_line_m * ub
+        ub_line_m = (np_fn(ub) - np_fn(lb)) / (ub - lb)
+        ub_line_b = np_fn(ub) - ub_line_m * ub
 
-    try:
-        d_lb = optimize.root_scalar(lambda d: fn_derivative_bound_d(d, lb), bracket=[split_point, ub], method='brentq').root
-    except:
-        d_lb = split_point - 1
+    # try:
+    #     d_lb = optimize.root_scalar(lambda d: fn_derivative_bound_d(d, lb), bracket=[split_point, ub], method='brentq', xtol=brenth_xtol, rtol=brenth_rtol).root
+    # except:
+    #     d_lb = split_point - 1
     
-    return (ub_line_m, ub_line_b)
+    return (torch.tensor(ub_line_m), torch.tensor(ub_line_b))
 
 
-def get_lines_lb_in_concave_ub_in_convex(lb: torch.tensor, ub: torch.tensor, split_point: torch.tensor, fn: callable, fn_derivative: callable) -> Tuple[line_type, line_type]:
+def get_lines_lb_in_concave_ub_in_convex(lb: torch.tensor, ub: torch.tensor, split_point: float, np_fn: callable, np_fn_derivative: callable) -> Tuple[line_type, line_type]:
     return (
-        get_lb_line_lb_in_concave_ub_in_convex(lb, ub, split_point, fn, fn_derivative),
-        get_ub_line_lb_in_concave_ub_in_convex(lb, ub, split_point, fn, fn_derivative)
+        get_lb_line_lb_in_concave_ub_in_convex(lb, ub, split_point, np_fn, np_fn_derivative),
+        get_ub_line_lb_in_concave_ub_in_convex(lb, ub, split_point, np_fn, np_fn_derivative)
     )
 
 
@@ -181,12 +186,12 @@ class TanhRelaxation(ActivationRelaxation):
             ub_line[1] = tanh(d_1) - ub_line[0] * d_1
         else:
             try:
-                d_ub = optimize.root_scalar(lambda d: tanh_bound_d(d, lb), bracket=[0, ub], method='brentq').root
+                d_ub = optimize.root_scalar(lambda d: tanh_bound_d(d, lb), bracket=[0, ub], method='brentq', xtol=brenth_xtol, rtol=brenth_rtol).root
             except:
                 d_ub = -1
 
             try:
-                d_lb = optimize.root_scalar(lambda d: tanh_bound_d(d, ub), bracket=[lb, 0], method='brentq').root
+                d_lb = optimize.root_scalar(lambda d: tanh_bound_d(d, ub), bracket=[lb, 0], method='brentq', xtol=brenth_xtol, rtol=brenth_rtol).root
             except:
                 d_lb = 1
 
@@ -245,7 +250,7 @@ class TanhDerivativeRelaxation(ActivationRelaxation):
         return p >= region[0] and p <= region[1]
     
     @staticmethod
-    def np_tanh_derivative(x):
+    def np_tanh_derivative(x: float):
         return 1 - np.tanh(x)**2
 
     @staticmethod
@@ -290,50 +295,12 @@ class TanhDerivativeRelaxation(ActivationRelaxation):
             # points are in different regions; 
             # are they in the first convex and the concave regions?
             if self.in_region(lb, self.first_convex_region) and self.in_region(ub, self.concave_region):
-                # if -lb >= ub:
-                #     lb_m = min(self.tanh_second_derivative(lb), (self.evaluate(ub) - self.evaluate(lb)) / (ub - lb))
-                #     lb_b = self.evaluate(lb) - lb_m * lb
-                #     lb_lines.append((lb_m, lb_b))
-                # else:
-                #     lb_m = max(self.tanh_second_derivative(ub), (self.evaluate(ub) - self.evaluate(lb)) / (ub - lb))
-                #     lb_b = self.evaluate(ub) - lb_m * ub
-                #     lb_lines.append((lb_m, lb_b))
-
-                # # ub_lines
-                # ub_m = ((self.evaluate(lb) - self.b_intersect)/lb)
-                # ub_b = self.evaluate(lb) - ub_m * lb
-                # ub_lines.append((ub_m, ub_b))
-
-                # if ub > 0:
-                #     ub_m = ((self.evaluate(ub) - self.b_intersect)/ub)
-                #     ub_b = self.evaluate(ub) - ub_m * ub
-                #     ub_lines.append((ub_m, ub_b))
-
-                lb_line, ub_line = get_lines_lb_in_convex_ub_in_concave(lb, ub, self.concave_region[0], self.evaluate, self.tanh_second_derivative)
+                lb_line, ub_line = get_lines_lb_in_convex_ub_in_concave(lb, ub, self.concave_region[0], self.np_tanh_derivative, self.np_tanh_second_derivative)
 
                 lb_lines.append(lb_line)
                 ub_lines.append(ub_line)
             elif self.in_region(lb, self.concave_region) and self.in_region(ub, self.second_convex_region):
-                # if -lb >= ub:
-                #     lb_m = min(self.tanh_second_derivative(lb), (self.evaluate(ub) - self.evaluate(lb)) / (ub - lb))
-                #     lb_b = self.evaluate(lb) - lb_m * lb
-                #     lb_lines.append((lb_m, lb_b))
-                # else:
-                #     lb_m = max(self.tanh_second_derivative(ub), (self.evaluate(ub) - self.evaluate(lb)) / (ub - lb))
-                #     lb_b = self.evaluate(ub) - lb_m * ub
-                #     lb_lines.append((lb_m, lb_b))
-
-                # # ub_lines
-                # if lb < 0:
-                #     ub_m = ((self.evaluate(lb) - self.b_intersect)/lb)
-                #     ub_b = self.evaluate(lb) - ub_m * lb
-                #     ub_lines.append((ub_m, ub_b))
-
-                # ub_m = ((self.evaluate(ub) - self.b_intersect)/ub)
-                # ub_b = self.evaluate(ub) - ub_m * ub
-                # ub_lines.append((ub_m, ub_b))
-
-                lb_line, ub_line = get_lines_lb_in_concave_ub_in_convex(lb, ub, self.concave_region[1], self.evaluate, self.tanh_second_derivative)
+                lb_line, ub_line = get_lines_lb_in_concave_ub_in_convex(lb, ub, self.concave_region[1], self.np_tanh_derivative, self.np_tanh_second_derivative)
 
                 lb_lines.append(lb_line)
                 ub_lines.append(ub_line)
@@ -342,19 +309,45 @@ class TanhDerivativeRelaxation(ActivationRelaxation):
             elif self.in_region(lb, self.first_convex_region) and self.in_region(ub, self.second_convex_region):
                 # lb should be a single line, no benefit of more than one
                 if -lb >= ub:
-                    lb_line_left = get_lb_line_lb_in_convex_ub_in_concave(lb, ub, self.concave_region[0], self.evaluate, self.tanh_second_derivative)
+                    lb_line_left = get_lb_line_lb_in_convex_ub_in_concave(lb, ub, self.concave_region[0], self.np_tanh_derivative, self.np_tanh_second_derivative)
                     lb_lines.append(lb_line_left)
                 else:
-                    lb_line_right = get_lb_line_lb_in_concave_ub_in_convex(lb, ub, self.concave_region[1], self.evaluate, self.tanh_second_derivative)
+                    lb_line_right = get_lb_line_lb_in_concave_ub_in_convex(lb, ub, self.concave_region[1], self.np_tanh_derivative, self.np_tanh_second_derivative)
                     lb_lines.append(lb_line_right)
 
-                ub_line_left = get_ub_line_lb_in_convex_ub_in_concave(lb, torch.tensor([0]), self.concave_region[0], self.evaluate, self.tanh_second_derivative)
-                ub_line_right = get_ub_line_lb_in_concave_ub_in_convex(torch.tensor([0]), ub, self.concave_region[1], self.evaluate, self.tanh_second_derivative)
+                ub_line_left = get_ub_line_lb_in_convex_ub_in_concave(lb, torch.tensor([0]), self.concave_region[0], self.np_tanh_derivative, self.np_tanh_second_derivative)
+                ub_line_right = get_ub_line_lb_in_concave_ub_in_convex(torch.tensor([0]), ub, self.concave_region[1], self.np_tanh_derivative, self.np_tanh_second_derivative)
 
                 ub_lines.append(ub_line_left)
                 ub_lines.append(ub_line_right)
 
         return lb_lines, ub_lines
+    
+    def single_line_relaxation(self, lb: torch.tensor, ub: torch.tensor) -> line_type:
+        lb_lines, ub_lines = self.multi_line_relaxation(lb, ub)
+
+        lb_line = []
+        ub_line = []
+
+        if len(lb_lines) == 1:
+            lb_line = lb_lines[0]
+        else:
+            lb_bias = -lb/(-lb + ub)
+            biases = [lb_bias, 1 - lb_bias]
+
+            lb_line.append(sum([bias*m for (m, _), bias in zip(lb_lines, biases)]))
+            lb_line.append(sum([bias*b for (_, b), bias in zip(lb_lines, biases)]))
+
+        if len(ub_lines) == 1:
+            ub_line = ub_lines[0]
+        else:
+            lb_bias = -lb/(-lb + ub)
+            biases = [lb_bias, 1 - lb_bias]
+
+            ub_line.append(sum([bias*m for (m, _), bias in zip(ub_lines, biases)]))
+            ub_line.append(sum([bias*b for (_, b), bias in zip(ub_lines, biases)]))
+
+        return lb_line, ub_line
     
     def get_lb_ub_in_interval(self, lb: torch.tensor, ub: torch.tensor) -> Tuple[torch.tensor, torch.tensor]:
         out_lb = min(self.evaluate(lb), self.evaluate(ub))
@@ -459,50 +452,50 @@ class TanhSecondDerivativeRelaxation(ActivationRelaxation):
             # points are in different regions; 
             # they are in adjoint regions (3 cases)
             if self.in_region(lb, self.first_convex_region) and self.in_region(ub, self.first_concave_region):
-                lb_line, ub_line = get_lines_lb_in_convex_ub_in_concave(lb, ub, self.first_concave_region[0], self.evaluate, self.np_tanh_third_derivative)
+                lb_line, ub_line = get_lines_lb_in_convex_ub_in_concave(lb, ub, self.first_concave_region[0], self.np_tanh_second_derivative, self.np_tanh_third_derivative)
 
                 lb_lines.append(lb_line)
                 ub_lines.append(ub_line)
             elif self.in_region(lb, self.second_convex_region) and self.in_region(ub, self.second_concave_region):
-                lb_line, ub_line = get_lines_lb_in_convex_ub_in_concave(lb, ub, self.second_concave_region[0], self.evaluate, self.np_tanh_third_derivative)
+                lb_line, ub_line = get_lines_lb_in_convex_ub_in_concave(lb, ub, self.second_concave_region[0], self.np_tanh_second_derivative, self.np_tanh_third_derivative)
 
                 lb_lines.append(lb_line)
                 ub_lines.append(ub_line)
             elif self.in_region(lb, self.first_concave_region) and self.in_region(ub, self.second_convex_region):
-                lb_line, ub_line = get_lines_lb_in_concave_ub_in_convex(lb, ub, self.second_convex_region[0], self.evaluate, self.np_tanh_third_derivative)
+                lb_line, ub_line = get_lines_lb_in_concave_ub_in_convex(lb, ub, self.second_convex_region[0], self.np_tanh_second_derivative, self.np_tanh_third_derivative)
 
                 lb_lines.append(lb_line)
                 ub_lines.append(ub_line)
 
             # they are in non-adjoint regions (3 cases)
             elif self.in_region(lb, self.first_convex_region) and self.in_region(ub, self.second_convex_region):
-                lb_line_right = get_lb_line_lb_in_concave_ub_in_convex(lb, ub, self.first_concave_region[1], self.evaluate, self.np_tanh_third_derivative)
+                lb_line_right = get_lb_line_lb_in_concave_ub_in_convex(lb, ub, self.first_concave_region[1], self.np_tanh_second_derivative, self.np_tanh_third_derivative)
                 lb_lines.append(lb_line_right)
 
-                ub_line_left = get_ub_line_lb_in_convex_ub_in_concave(lb, torch.tensor([self.first_mound_x]), self.first_concave_region[0], self.evaluate, self.np_tanh_third_derivative)
-                ub_line_right = get_ub_line_lb_in_concave_ub_in_convex(torch.tensor([self.first_mound_x]), ub, self.first_concave_region[1], self.evaluate, self.np_tanh_third_derivative)
+                ub_line_left = get_ub_line_lb_in_convex_ub_in_concave(lb, torch.tensor([self.first_mound_x]), self.first_concave_region[0], self.np_tanh_second_derivative, self.np_tanh_third_derivative)
+                ub_line_right = get_ub_line_lb_in_concave_ub_in_convex(torch.tensor([self.first_mound_x]), ub, self.first_concave_region[1], self.np_tanh_second_derivative, self.np_tanh_third_derivative)
 
                 ub_lines.append(ub_line_left)
                 ub_lines.append(ub_line_right)
 
             elif self.in_region(lb, self.first_concave_region) and self.in_region(ub, self.second_concave_region):
-                lb_line_left = get_lb_line_lb_in_concave_ub_in_convex(lb, ub, self.second_convex_region[0], self.evaluate, self.np_tanh_third_derivative)
-                lb_line_right = get_lb_line_lb_in_convex_ub_in_concave(torch.tensor([self.second_mound_x]), ub, self.second_convex_region[1], self.evaluate, self.np_tanh_third_derivative)
+                lb_line_left = get_lb_line_lb_in_concave_ub_in_convex(lb, ub, self.second_convex_region[0], self.np_tanh_second_derivative, self.np_tanh_third_derivative)
+                lb_line_right = get_lb_line_lb_in_convex_ub_in_concave(torch.tensor([self.second_mound_x]), ub, self.second_convex_region[1], self.np_tanh_second_derivative, self.np_tanh_third_derivative)
 
                 lb_lines.append(lb_line_left)
                 lb_lines.append(lb_line_right)
 
-                ub_line = get_ub_line_lb_in_concave_ub_in_convex(lb, ub, self.second_convex_region[0], self.evaluate, self.np_tanh_third_derivative)
+                ub_line = get_ub_line_lb_in_concave_ub_in_convex(lb, ub, self.second_convex_region[0], self.np_tanh_second_derivative, self.np_tanh_third_derivative)
                 ub_lines.append(ub_line)
             elif self.in_region(lb, self.first_convex_region) and self.in_region(ub, self.second_concave_region):
-                lb_line_left = get_lb_line_lb_in_concave_ub_in_convex(lb, ub, self.second_convex_region[0], self.evaluate, self.np_tanh_third_derivative)
-                lb_line_right = get_lb_line_lb_in_convex_ub_in_concave(torch.tensor([self.second_mound_x]), ub, self.second_convex_region[1], self.evaluate, self.np_tanh_third_derivative)
+                lb_line_left = get_lb_line_lb_in_concave_ub_in_convex(lb, ub, self.second_convex_region[0], self.np_tanh_second_derivative, self.np_tanh_third_derivative)
+                lb_line_right = get_lb_line_lb_in_convex_ub_in_concave(torch.tensor([self.second_mound_x]), ub, self.second_convex_region[1], self.np_tanh_second_derivative, self.np_tanh_third_derivative)
 
                 lb_lines.append(lb_line_left)
                 lb_lines.append(lb_line_right)
                 
-                ub_line_left = get_ub_line_lb_in_convex_ub_in_concave(lb, torch.tensor([self.first_mound_x]), self.first_concave_region[0], self.evaluate, self.np_tanh_third_derivative)
-                ub_line_right = get_ub_line_lb_in_concave_ub_in_convex(torch.tensor([self.first_mound_x]), ub, self.first_concave_region[1], self.evaluate, self.np_tanh_third_derivative)
+                ub_line_left = get_ub_line_lb_in_convex_ub_in_concave(lb, torch.tensor([self.first_mound_x]), self.first_concave_region[0], self.np_tanh_second_derivative, self.np_tanh_third_derivative)
+                ub_line_right = get_ub_line_lb_in_concave_ub_in_convex(torch.tensor([self.first_mound_x]), ub, self.first_concave_region[1], self.np_tanh_second_derivative, self.np_tanh_third_derivative)
 
                 ub_lines.append(ub_line_left)
                 ub_lines.append(ub_line_right)
@@ -511,43 +504,128 @@ class TanhSecondDerivativeRelaxation(ActivationRelaxation):
 
         return lb_lines, ub_lines
 
+    def single_line_relaxation(self, lb: torch.tensor, ub: torch.tensor) -> line_type:
+        lb_lines, ub_lines = self.multi_line_relaxation(lb, ub)
+        lb_line = []
+        ub_line = []
+
+        if len(lb_lines) == 1:
+            lb_line = lb_lines[0]
+        else:
+            lb_bias = -lb/(-lb + ub)
+            biases = [lb_bias, 1 - lb_bias]
+
+            lb_line.append(sum([bias*m for (m, _), bias in zip(lb_lines, biases)]))
+            lb_line.append(sum([bias*b for (_, b), bias in zip(lb_lines, biases)]))
+
+        if len(ub_lines) == 1:
+            ub_line = ub_lines[0]
+        else:
+            lb_bias = -lb/(-lb + ub)
+            biases = [lb_bias, 1 - lb_bias]
+
+            ub_line.append(sum([bias*m for (m, _), bias in zip(ub_lines, biases)]))
+            ub_line.append(sum([bias*b for (_, b), bias in zip(ub_lines, biases)]))
+        
+        return lb_line, ub_line
+
     def get_lb_ub_in_interval(self, lb: torch.tensor, ub: torch.tensor) -> Tuple[torch.tensor, torch.tensor]:
         if lb == ub:
             return self.evaluate(lb), self.evaluate(ub)
 
-        min_determined = False
-        max_determined = False
-        abs_min = -0.7708003589195009
-        abs_max = 0.7708003589195009
+        abs_min = -0.7699003589195009 - 1e-4
+        abs_max = 0.7699003589195009 + 1e-4
 
         # 10 cases in total
+        # 4 cases of being in the same region
         # 2 cases - if in the first convex or second concave region, min and max are just evaluation of function
-        if (self.in_region(lb, self.first_convex_region) and self.in_region(ub, self.first_convex_region)):
-            return self.evaluate(lb), self.evaluate(ub)
-        elif (self.in_region(lb, self.second_concave_region) and self.in_region(ub, self.second_concave_region)):
-            return self.evaluate(ub), self.evaluate(lb)
-        # 2 cases - if in the first concave or second convex region, min/max are the min/max of evaluating the extremes
+        if (self.in_region(lb, self.first_convex_region) and self.in_region(ub, self.first_convex_region)) or\
+                (self.in_region(lb, self.second_concave_region) and self.in_region(ub, self.second_concave_region)):
+            out_lb = self.evaluate(lb)
+            out_ub = self.evaluate(ub)
+        # 2 cases - if in the first concave region or second convex region, check whether first_mound_x is between them
         elif (self.in_region(lb, self.first_concave_region) and self.in_region(ub, self.first_concave_region)):
             out_lb = min(self.evaluate(lb), self.evaluate(ub))
-            min_determined = True
+
+            # are the points on either side of the first mound?
+            if (lb <= self.first_mound_x and self.first_mound_x <= ub):
+                out_ub = abs_max
+            else:
+                out_ub = max(self.evaluate(lb), self.evaluate(ub))
         elif (self.in_region(lb, self.second_convex_region) and self.in_region(ub, self.second_convex_region)):
             out_ub = max(self.evaluate(lb), self.evaluate(ub))
-            max_determined = True
-        # 1 case - if in the extremeties, it's abs_min and abs_max
-        elif (self.in_region(lb, self.first_convex_region) and self.in_region(lb, self.second_concave_region)):
-            return abs_min, abs_max
-        # 2 cases - if a mound is in between lb and ub, take that min/max depending on which it is
-        elif (self.in_region(lb, self.first_convex_region) and self.in_region(lb, self.second_convex_region)):
-            out_ub = abs_max
-            max_determined = True
-        elif (self.in_region(lb, self.first_concave_region) and self.in_region(lb, self.first_concave_region)):
-            out_lb = abs_min
-            min_determined = True
-
-        if not min_determined:
-            out_lb = optimize.minimize(lambda x: self.evaluate_np(x), bounds=[(lb, ub)], x0=(lb+ub)/2).fun - 1e-3
+            
+            # are the points on either side of the first mound?
+            if (lb <= self.second_mound_x and self.second_mound_x <= ub):
+                out_lb = abs_min
+            else:
+                out_lb = min(self.evaluate(lb), self.evaluate(ub))
         
-        if not max_determined:
-            out_ub = -optimize.minimize(lambda x: -self.evaluate_np(x), bounds=[(lb, ub)], x0=(lb+ub)/2).fun + 1e-3
+        # 3 cases for adjacent regions
+        elif (self.in_region(lb, self.first_convex_region) and self.in_region(ub, self.first_concave_region)):
+            out_lb = min(self.evaluate(lb), self.evaluate(ub))
+
+            if (ub <= self.first_mound_x):
+                out_ub = self.evaluate(ub)
+            else:
+                out_ub = abs_max
+        elif (self.in_region(lb, self.first_concave_region) and self.in_region(ub, self.second_convex_region)):
+            if (lb <= self.first_mound_x):
+                out_ub = abs_max
+            else:
+                out_ub = self.evaluate(lb)
+
+            if (ub >= self.second_mound_x):
+                out_lb = abs_min
+            else:
+                out_lb = self.evaluate(ub)
+        elif (self.in_region(lb, self.second_convex_region) and self.in_region(ub, self.second_concave_region)):
+            out_ub = max(self.evaluate(lb), self.evaluate(ub))
+
+            if (lb >= self.second_mound_x):
+                out_lb = self.evaluate(lb)
+            else:
+                out_lb = abs_min
+
+        # 2 cases for regions that are separated by another region
+        # 2 cases - if a mound is in between lb and ub, take that min/max depending on which it is
+        elif (self.in_region(lb, self.first_convex_region) and self.in_region(ub, self.second_convex_region)):
+            out_ub = abs_max
+
+            if (ub <= self.second_mound_x):
+                out_lb = self.evaluate(ub)
+            else:
+                out_lb = abs_min
+        elif (self.in_region(lb, self.first_concave_region) and self.in_region(ub, self.second_concave_region)):
+            out_lb = abs_min
+
+            if (lb >= self.first_mound_x):
+                out_ub = self.evaluate(lb)
+            else:
+                out_ub = abs_max
+        
+
+        # 1 case for extremeties - if in the extremeties, it's abs_min and abs_max
+        elif (self.in_region(lb, self.first_convex_region) and self.in_region(ub, self.second_concave_region)):
+            return abs_min, abs_max
+        else:
+            import pdb
+            pdb.set_trace()
+
+        # if not min_determined:
+        # out_lb_ = optimize.minimize(self.evaluate_np, bounds=[(lb, ub)], x0=(lb+ub)/2, tol=1e-8).fun
+        
+        # def neg_evaluate_np(x):
+        #     return -self.evaluate_np(x)
+
+        # # if not max_determined:
+        # # out_ub_ = -optimize.minimize(neg_evaluate_np, bounds=[(lb, ub)], x0=ub, tol=1e-8).fun
+
+        # try:
+        #     assert np.abs(out_lb_ - out_lb) <= 1e-3
+        #     # assert np.abs(out_ub_ - out_ub) <= 1e-3
+        # except:
+        #     import pdb
+        #     pdb.set_trace()
 
         return out_lb, out_ub

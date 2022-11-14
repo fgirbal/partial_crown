@@ -14,9 +14,35 @@ from pinn_verifier.branching import greedy_input_branching, VerbosityLevel
 torch.manual_seed(43)
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--network-filename', required=True, type=str, help='onnx file to load.')
-parser.add_argument('--greedy-output-pieces', required=True, type=str, help='write the new pieces to this file')
-parser.add_argument('--greedy-input-pieces', type=str, help='if passed; load the pieces from this file and continue from here')
+parser.add_argument(
+    '-n', '--network-filename',
+    required=True,
+    type=str,
+    help='onnx file to load.'
+)
+parser.add_argument(
+    '-o', '--greedy-output-pieces',
+    required=True,
+    type=str,
+    help='write the new pieces to this file'
+)
+parser.add_argument(
+    '-m', '--maximum-computations',
+    required=True,
+    type=int,
+    help='maximum number of total allowed computations'
+)
+parser.add_argument(
+    '-i', '--greedy-input-pieces',
+    type=str,
+    help='if passed; load the pieces from this file and continue from here'
+)
+parser.add_argument(
+    '-s', '--save-frequency',
+    type=int,
+    help='save frequency in terms of branches',
+    default=2500
+)
 args = parser.parse_args()
 
 dtype = torch.float32
@@ -29,8 +55,8 @@ for layer in layers:
 
 boundary_conditions = torch.tensor([[0, -1], [1, 1]], dtype=dtype)
 activation_relaxation = TanhRelaxation(ActivationRelaxationType.SINGLE_LINE)
-activation_derivative_relaxation = TanhDerivativeRelaxation(ActivationRelaxationType.MULTI_LINE)
-activation_second_derivative_relaxation = TanhSecondDerivativeRelaxation(ActivationRelaxationType.MULTI_LINE)
+activation_derivative_relaxation = TanhDerivativeRelaxation(ActivationRelaxationType.SINGLE_LINE)
+activation_second_derivative_relaxation = TanhSecondDerivativeRelaxation(ActivationRelaxationType.SINGLE_LINE)
 
 def empirical_evaluation(model, grid_points):
     # t, x = grid_points[:, 0:1], grid_points[:, 1:2]
@@ -96,12 +122,19 @@ def crown_verifier_function(layers, piece_domain, debug=True):
         debug=False
     )
 
-    logs = {
-        "u_theta": [burgers.u_theta.lower_bounds[-1].item(), burgers.u_theta.upper_bounds[-1].item()],
-        "u_dt_theta": [burgers.u_dt_theta.lower_bounds[-1].item(), burgers.u_dt_theta.upper_bounds[-1].item()],
-        "u_dx_theta": [burgers.u_dx_theta.lower_bounds[-1].item(), burgers.u_dx_theta.upper_bounds[-1].item()],
-        "u_dxdx_theta": [burgers.u_dxdx_theta.lower_bounds[-1].item(), burgers.u_dxdx_theta.upper_bounds[-1].item()]
-    }
+    if any(ub <= lb):
+        import pdb
+        pdb.set_trace()
+
+    logs = [
+        {
+            "u_theta": [burgers.u_theta.lower_bounds[-1][i].item(), burgers.u_theta.upper_bounds[-1][i].item()],
+            "u_dt_theta": [burgers.u_dt_theta.lower_bounds[-1][i].item(), burgers.u_dt_theta.upper_bounds[-1][i].item()],
+            "u_dx_theta": [burgers.u_dx_theta.lower_bounds[-1][i].item(), burgers.u_dx_theta.upper_bounds[-1][i].item()],
+            "u_dxdx_theta": [burgers.u_dxdx_theta.lower_bounds[-1][i].item(), burgers.u_dxdx_theta.upper_bounds[-1][i].item()]
+        }
+        for i in range(ub.shape[0])
+    ]
 
     return lb, ub, logs
 
@@ -115,8 +148,8 @@ greedy_input_branching(
     args.greedy_output_pieces,
     input_filename=args.greedy_input_pieces,
     verbose=VerbosityLevel.NO_INDIVIDUAL_PROGRESS,
-    maximum_computations=10000,
-    save_frequency=250
+    maximum_computations=args.maximum_computations,
+    save_frequency=args.save_frequency
 )
 
 # piece_domain = torch.tensor([[ 0.7422, -0.0078], [ 0.7441, -0.0039]])

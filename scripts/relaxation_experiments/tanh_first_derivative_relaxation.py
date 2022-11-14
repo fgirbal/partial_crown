@@ -200,23 +200,6 @@ def compute_lower_upper_bounds_lines(lb, ub, ub_line_ub_bias=0.9, lb_line_ub_bia
             ub_lines.append(ub_line)
             print('concave, convex')
         
-        x_vals = torch.linspace(lb.item(), ub.item(), 1000, dtype=torch.float64)
-        actual_y_vals = tanh_derivative(x_vals)
-
-        lb_line_vals = lb_line[0] * x_vals + lb_line[1]
-        ub_line_vals = ub_line[0] * x_vals + ub_line[1]
-
-        import matplotlib.pyplot as plt
-        plt.cla()
-        plt.plot(x_vals, actual_y_vals, label="v")
-        plt.plot(x_vals, lb_line_vals, label="lb")
-        plt.plot(x_vals, ub_line_vals, label="ub")
-        plt.legend()
-        plt.show()
-
-        import pdb
-        pdb.set_trace()
-
         # are they in the two convex regions?
         if in_region(lb, first_convex_region) and in_region(ub, second_convex_region):
             # lb should be a single line, no benefit of more than one
@@ -270,6 +253,18 @@ if not paper_mode:
     for ub_line in ub_lines:
         y_ub = ub_line[0] * x_1 + ub_line[1] + 1e-4
         plt.plot(x_1, y_ub, c='g')
+    
+    lb_bias = -lb/(-lb + ub)
+    biases = [lb_bias, 1 - lb_bias]
+
+    print(biases)
+
+    if len(ub_lines) >= 2:
+        y_ub = sum([bias*m for (m, b), bias in zip(ub_lines, biases)]) * x_1 + sum([bias*b for (m, b), bias in zip(ub_lines, biases)])
+        ax.plot(x_1, y_ub, c='y')
+
+        y_ub = sum([0.5*m for (m, b), bias in zip(ub_lines, biases)]) * x_1 + sum([0.5*b for (m, b), bias in zip(ub_lines, biases)])
+        ax.plot(x_1, y_ub, c='k')
 
     plt.subplots_adjust(left=0.1, bottom=0.35, right=0.9)
 
@@ -302,6 +297,9 @@ if not paper_mode:
         y = fn_call(x)
         ax.plot(x, y, c="b")
 
+        lb = torch.tensor(lb_slider.val)
+        ub = torch.tensor(ub_slider.val)
+
         x_1 = torch.linspace(torch.tensor(lb_slider.val), torch.tensor(ub_slider.val), 250)
 
         lb_lines, ub_lines = compute_lower_upper_bounds_lines(torch.tensor(lb_slider.val), torch.tensor(ub_slider.val), lb_line_ub_bias=0.4, ub_line_ub_bias=0.5)
@@ -314,8 +312,15 @@ if not paper_mode:
             y_ub = ub_line[0] * x_1 + ub_line[1]
             ax.plot(x_1, y_ub, c='g')
 
+        # if len(ub_lines) >= 2:
+        #     y_ub = sum([m for m, b in ub_lines])/len(ub_lines) * x_1 + sum([b for m, b in ub_lines])/len(ub_lines)
+        #     ax.plot(x_1, y_ub, c='y')
+        
+        lb_bias = -lb/(-lb + ub)
+        biases = [lb_bias, 1 - lb_bias]
+
         if len(ub_lines) >= 2:
-            y_ub = sum([m for m, b in ub_lines])/len(ub_lines) * x_1 + sum([b for m, b in ub_lines])/len(ub_lines)
+            y_ub = sum([bias*m for (m, _), bias in zip(ub_lines, biases)]) * x_1 + sum([bias*b for (_, b), bias in zip(ub_lines, biases)])
             ax.plot(x_1, y_ub, c='y')
 
         ax.set_xlim([x_min*1.1, x_max*1.1])
