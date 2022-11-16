@@ -7,6 +7,7 @@ import torch
 
 from pinn_verifier.activations import ActivationRelaxation, ActivationRelaxationType
 from pinn_verifier.activations.tanh import TanhRelaxation, TanhDerivativeRelaxation, TanhSecondDerivativeRelaxation
+from pinn_verifier.activations.sin import SinRelaxation
 
 N_INTERVALS = 1000
 N_INTERVALS_LB_UB_IN_INTERVAL = 10000
@@ -68,6 +69,16 @@ def test_random_tanh_second_derivative_relaxation():
 
     return True
 
+def test_random_sin_relaxation():
+    activation = SinRelaxation(ActivationRelaxationType.SINGLE_LINE)
+
+    lbs = torch.FloatTensor(N_INTERVALS).uniform_(-1, 1-1e-3)
+    ubs = torch.clamp(lbs + torch.FloatTensor(N_INTERVALS).uniform_(1e-2, 2), max=1)
+
+    for i in range(N_INTERVALS):
+        assert activation_relaxation_bounds_included(activation, lbs[i], ubs[i])
+
+    return True
 
 def lb_ub_in_interval_valid(activation_relaxation: ActivationRelaxation, lb: torch.Tensor, ub: torch.Tensor):
     interval_lb, interval_ub = activation_relaxation.get_lb_ub_in_interval(lb, ub)

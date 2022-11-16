@@ -155,12 +155,10 @@ class TanhRelaxation(ActivationRelaxation):
             return np.tanh(x)
 
         def tanh_bound_d(x, bound):
-            return (1 - np_tanh(x)**2) - (np_tanh(x) - np_tanh(bound)) / (x - bound) 
+            return (1 - np_tanh(x)**2) - (np_tanh(x) - np_tanh(bound)) / (x - bound)
 
         lb_line = [0, 0]
         ub_line = [0, 0]
-
-        assert lb <= ub
 
         if lb < 0 and ub < 0:
             # in this location, the function is convex, use the same bounds as in softplus case
@@ -215,6 +213,9 @@ class TanhRelaxation(ActivationRelaxation):
                 ub_line[0] = (tanh(ub) - tanh(lb)) / (ub - lb)
                 ub_line[1] = tanh(ub) - ub_line[0] * ub
 
+        lb_line[1] -= 1e-5
+        ub_line[1] += 1e-5
+
         return lb_line, ub_line
     
     def get_lb_ub_in_interval(self, lb: torch.tensor, ub: torch.tensor) -> Tuple[torch.tensor, torch.tensor]:
@@ -261,7 +262,6 @@ class TanhDerivativeRelaxation(ActivationRelaxation):
         lb_lines = []
         ub_lines = []
 
-        assert lb <= ub
         lb = lb.to(torch.float64)
         ub = ub.to(torch.float64)
 
@@ -419,8 +419,6 @@ class TanhSecondDerivativeRelaxation(ActivationRelaxation):
     def multi_line_relaxation(self, lb: torch.tensor, ub: torch.tensor) -> Tuple[List[line_type], List[line_type]]:
         lb_lines = []
         ub_lines = []
-
-        assert lb <= ub
 
         if (self.in_region(lb, self.first_convex_region) and self.in_region(ub, self.first_convex_region)) or (self.in_region(lb, self.second_convex_region) and self.in_region(ub, self.second_convex_region)):
             # in this location, the function is convex, use the same bounds as in softplus case

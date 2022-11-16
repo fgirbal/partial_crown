@@ -1,12 +1,14 @@
 """
 Greedy branching strategy as described in the paper.
 """
+import os
 import copy
 import time
 import json
 from typing import List
 from enum import Enum
 import itertools
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -69,6 +71,7 @@ def greedy_input_branching(
     elapsed_time = 0
     debug_param = (verbose is VerbosityLevel.ALL_OUTPUT)
     pieces_saved = []
+    Path(os.path.dirname(output_filename)).mkdir(parents=True, exist_ok=True)
 
     ts = torch.linspace(domain_bounds[0, 0], domain_bounds[1, 0], 1000)
     xs = torch.linspace(domain_bounds[0, 1], domain_bounds[1, 1], 1000)
@@ -130,8 +133,6 @@ def greedy_input_branching(
             "all_max": all_max.item()
         })
         json.dump(pieces_saved, open(output_filename, "w"))
-
-        current_parent_piece_max_diff = current_parent_piece[0]
     else:
         with open(input_filename, "r") as fp:
             pieces_saved = json.load(fp)
@@ -141,22 +142,30 @@ def greedy_input_branching(
         i = last_piece["i"]
         elapsed_time = last_piece["elapsed_time"]
 
-        # select the next parent piece
-        current_parent_piece = max(pieces, key=lambda piece: piece[0])
-        current_parent_piece_idx = pieces.index(current_parent_piece)
-        current_parent_piece_max_diff = current_parent_piece[0]
-        pieces.pop(current_parent_piece_idx)
-        current_parent_piece = np.array(current_parent_piece[-1])
+    # select the next parent piece
+    current_parent_piece = max(pieces, key=lambda piece: piece[0])
+    current_parent_piece_idx = pieces.index(current_parent_piece)
+    current_parent_piece_max_diff = current_parent_piece[0]
+    pieces.pop(current_parent_piece_idx)
+    current_parent_piece = np.array(current_parent_piece[-1])
 
     last_save = 0
+    prev_max_diff = current_parent_piece_max_diff
     while True:
         verbose_log(verbose, f"Breaking down piece with maximum difference of {current_parent_piece_max_diff}", MessageType.GENERAL_OUTPUT)
 
-        t_domains = np.linspace(current_parent_piece[0, 0], current_parent_piece[1, 0], 3)
-        x_domains = np.linspace(current_parent_piece[0, 1], current_parent_piece[1, 1], 3)
+        if current_parent_piece[0, 0] != current_parent_piece[1, 0]:
+            t_domains = np.linspace(current_parent_piece[0, 0], current_parent_piece[1, 0], 3)
+            t_intervals = [(t_min, t_max) for t_min, t_max in zip(t_domains[:-1], t_domains[1:])]
+        else:
+            t_intervals = [(current_parent_piece[0, 0].item(), current_parent_piece[1, 0].item())]
 
-        t_intervals = [(t_min, t_max) for t_min, t_max in zip(t_domains[:-1], t_domains[1:])]
-        x_intervals = [(x_min, x_max) for x_min, x_max in zip(x_domains[:-1], x_domains[1:])]
+        if current_parent_piece[0, 1] != current_parent_piece[1, 1]:
+            x_domains = np.linspace(current_parent_piece[0, 1], current_parent_piece[1, 1], 3)
+            x_intervals = [(x_min, x_max) for x_min, x_max in zip(x_domains[:-1], x_domains[1:])]
+        else:
+            x_intervals = [(current_parent_piece[0, 1].item(), current_parent_piece[1, 1].item())]
+
         branches = torch.Tensor(list(itertools.product(t_intervals, x_intervals))).transpose(1, 2)
 
         s = time.time()

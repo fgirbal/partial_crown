@@ -9,6 +9,78 @@ tanh = torch.nn.Tanh()
 def tanh_derivative(x):
     return 1 - tanh(x)**2
 
+# def compute_lower_upper_bounds_lines(lb, ub, ub_line_ub_bias=0.9, lb_line_ub_bias=0.2):
+#     def np_tanh(x):
+#         return np.tanh(x)
+
+#     def tanh_bound_d(x, bound):
+#         return (1 - np_tanh(x)**2) - (np_tanh(x) - np_tanh(bound)) / (x - bound) 
+
+#     lb_line = [0, 0]
+#     ub_line = [0, 0]
+
+#     assert lb <= ub
+
+#     if lb < 0 and ub < 0:
+#         # in this location, the function is convex, use the same bounds as in softplus case
+    
+#         # tangent line at point d_1
+#         d_1 = lb_line_ub_bias * ub + (1 - lb_line_ub_bias) * lb
+#         lb_line[0] = tanh_derivative(d_1)
+#         lb_line[1] = tanh(d_1) - lb_line[0] * d_1
+
+#         # ub line just connects upper and lower bound points
+#         ub_line[0] = (tanh(ub) - tanh(lb)) / (ub - lb)
+#         ub_line[1] = tanh(ub) - ub_line[0] * ub
+#     elif lb > 0 and ub > 0:
+#         # in this location, the function is concave, use the inverted bounds from softplus case
+
+#         # lb line just connects upper and lower bound points
+#         lb_line[0] = (tanh(ub) - tanh(lb)) / (ub - lb)
+#         lb_line[1] = tanh(ub) - lb_line[0] * ub
+
+#         # tangent line at point d_1
+#         d_1 = ub_line_ub_bias * ub + (1 - ub_line_ub_bias) * lb
+#         ub_line[0] = tanh_derivative(d_1)
+#         ub_line[1] = tanh(d_1) - ub_line[0] * d_1
+#     else:
+#         try:
+#             d_ub = optimize.root_scalar(lambda d: tanh_bound_d(d, lb), bracket=[0, ub], method='brentq').root
+#         except:
+#             print("here 1")
+#             d_ub = -1
+
+#         try:
+#             d_lb = optimize.root_scalar(lambda d: tanh_bound_d(d, ub), bracket=[lb, 0], method='brentq').root
+#         except:
+#             print("here 2")
+#             d_lb = 1
+
+#         d_ub, d_lb = torch.tensor(d_ub), torch.tensor(d_lb)
+
+#         if d_lb <= 0.0:
+#             # tangent line at point d_lb
+#             lb_line[0] = tanh_derivative(d_lb)
+#             lb_line[1] = tanh(ub) - lb_line[0] * ub
+#         else:
+#             # lb line just connects upper and lower bound points
+#             lb_line[0] = (tanh(ub) - tanh(lb)) / (ub - lb)
+#             lb_line[1] = tanh(ub) - lb_line[0] * ub
+
+#         if d_ub >= 0:
+#             # tangent line at point d_ub
+#             ub_line[0] = tanh_derivative(d_ub)
+#             ub_line[1] = tanh(lb) - ub_line[0] * lb
+#         else:
+#             # ub line just connects upper and lower bound points
+#             ub_line[0] = (tanh(ub) - tanh(lb)) / (ub - lb)
+#             ub_line[1] = tanh(ub) - ub_line[0] * ub
+
+#         import pdb
+#         pdb.set_trace()
+
+#     return [lb_line], [ub_line]
+
 def compute_lower_upper_bounds_lines(lb, ub, ub_line_ub_bias=0.9, lb_line_ub_bias=0.2):
     def np_tanh(x):
         return np.tanh(x)
@@ -43,17 +115,26 @@ def compute_lower_upper_bounds_lines(lb, ub, ub_line_ub_bias=0.9, lb_line_ub_bia
         d_1 = ub_line_ub_bias * ub + (1 - ub_line_ub_bias) * lb
         ub_line[0] = tanh_derivative(d_1)
         ub_line[1] = tanh(d_1) - ub_line[0] * d_1
+
+        # pre_act_inputs = torch.linspace(lb, ub, 100)
+        
+        # plt.clf()
+        # plt.plot(pre_act_inputs, tanh(pre_act_inputs))
+        # plt.plot(pre_act_inputs, lb_line[0]*pre_act_inputs + lb_line[1] - 1e-6)
+        # plt.plot(pre_act_inputs, ub_line[0]*pre_act_inputs + ub_line[1] + 1e-6)
+        # plt.show()
+
+        # import pdb
+        # pdb.set_trace()
     else:
         try:
-            d_ub = optimize.root_scalar(lambda d: tanh_bound_d(d, lb), bracket=[0, ub], method='brentq').root
+            d_ub = optimize.root_scalar(lambda d: tanh_bound_d(d, lb), bracket=[0, ub], method='brentq', xtol=1e-8, rtol=1e-8).root
         except:
-            print("here 1")
             d_ub = -1
 
         try:
-            d_lb = optimize.root_scalar(lambda d: tanh_bound_d(d, ub), bracket=[lb, 0], method='brentq').root
+            d_lb = optimize.root_scalar(lambda d: tanh_bound_d(d, ub), bracket=[lb, 0], method='brentq', xtol=1e-8, rtol=1e-8).root
         except:
-            print("here 2")
             d_lb = 1
 
         d_ub, d_lb = torch.tensor(d_ub), torch.tensor(d_lb)
@@ -76,8 +157,8 @@ def compute_lower_upper_bounds_lines(lb, ub, ub_line_ub_bias=0.9, lb_line_ub_bia
             ub_line[0] = (tanh(ub) - tanh(lb)) / (ub - lb)
             ub_line[1] = tanh(ub) - ub_line[0] * ub
 
-        import pdb
-        pdb.set_trace()
+    lb_line[1] -= 1e-7
+    ub_line[1] += 1e-7
 
     return [lb_line], [ub_line]
 
@@ -104,8 +185,17 @@ x_1 = torch.linspace(lb, ub, 250)
 
 lb_lines, ub_lines = compute_lower_upper_bounds_lines(lb, ub, lb_line_ub_bias=0.4, ub_line_ub_bias=0.5)
 
-# import pdb
-# pdb.set_trace()
+pre_act_inputs = torch.linspace(lb, ub, 100)
+# lb_lines[0][0]*pre_act_inputs + lb_lines[0][1] <= ub_lines[0][0]*pre_act_inputs + ub_lines[0][1]
+
+plt.clf()
+plt.plot(pre_act_inputs, tanh(pre_act_inputs))
+plt.plot(pre_act_inputs, lb_lines[0][0]*pre_act_inputs + lb_lines[0][1] - 1e-6)
+plt.plot(pre_act_inputs, ub_lines[0][0]*pre_act_inputs + ub_lines[0][1] + 1e-6)
+plt.show()
+
+import pdb
+pdb.set_trace()
 
 for lb_line in lb_lines:
     y_lb = lb_line[0] * x_1 + lb_line[1]

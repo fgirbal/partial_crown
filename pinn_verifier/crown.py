@@ -292,11 +292,7 @@ class CROWNPINNSolution():
             # take upper bound of x[i] if f_L_j_A_0[i] is negative, lower bound of x[i] if f_L_j_A_0[i] is positive
             LB_final = torch.sum(f_L_A_0.clamp(min=0) * pre_act_LBs[0].unsqueeze(1) + f_L_A_0.clamp(max=0) * pre_act_UBs[0].unsqueeze(1), dim=2) + f_L_constant
 
-        try:
-            assert all(UB_final.flatten() >= LB_final.flatten())
-        except:
-            import pdb
-            pdb.set_trace()
+        assert all(UB_final.flatten() >= LB_final.flatten())
 
         return UB_final, LB_final, (f_U_A_0, f_U_constant, f_L_A_0, f_L_constant)
 
@@ -363,8 +359,8 @@ class CROWNPINNSolution():
                 # batch compute the activation relaxations
                 s = time.time()
                 layer_output_lines = torch.Tensor([self.activation_relaxation.get_bounds(lb, ub) for lb, ub in zip(pre_act_LBs[-1].flatten(), pre_act_UBs[-1].flatten())]).reshape(-1, 4)
-                layer_output_lines[:, 1] = layer_output_lines[:, 1] / (layer_output_lines[:, 0] - 1e-12)
-                layer_output_lines[:, 3] = layer_output_lines[:, 3] / (layer_output_lines[:, 2] - 1e-12)
+                layer_output_lines[:, 1] = layer_output_lines[:, 1] / (layer_output_lines[:, 0] - 1e-8)
+                layer_output_lines[:, 3] = layer_output_lines[:, 3] / (layer_output_lines[:, 2] - 1e-8)
 
                 layer_output_lines = layer_output_lines.reshape(*pre_act_UBs[-1].shape, 4)
 
@@ -1805,119 +1801,3 @@ class CROWNPINNSecondPartialDerivative():
 
         self.computed_bounds = True
         self.computation_times['activation_relaxations'] = activation_relaxation_time
-
-
-class CROWNBurgersVerifier():
-    def __init__(
-            self, model: List[torch.nn.Module],
-            activation_relaxation: ActivationRelaxationType, 
-            activation_derivative_relaxation: ActivationRelaxationType,
-            activation_second_derivative_relaxation: ActivationRelaxationType
-    ) -> None:
-        self.u_theta = CROWNPINNSolution(
-            model,
-            activation_relaxation=activation_relaxation
-        )
-
-        self.u_dt_theta = CROWNPINNPartialDerivative(
-            self.u_theta,
-            component_idx=0,
-            activation_derivative_relaxation=activation_derivative_relaxation
-        )
-        self.u_dx_theta = CROWNPINNPartialDerivative(
-            self.u_theta,
-            component_idx=1,
-            activation_derivative_relaxation=activation_derivative_relaxation
-        )
-        self.u_dxdx_theta = CROWNPINNSecondPartialDerivative(
-            self.u_dx_theta,
-            component_idx=1,
-            activation_derivative_derivative_relaxation=activation_second_derivative_relaxation
-        )
-
-        self.viscosity = (0.01/np.pi)
-
-    def compute_residual_bound(
-            self,
-            domain_bounds: torch.tensor,
-            debug: bool = True,
-            derivatives_backprop_mode: BackpropMode = BackpropMode.COMPONENT_BACKPROP,
-            second_derivatives_backprop_mode: BackpropMode = BackpropMode.COMPONENT_BACKPROP
-    ):
-        # compute all the intermediate bounds of the components
-        u_theta = self.u_theta
-        u_theta.domain_bounds = domain_bounds
-        u_theta.compute_bounds(debug=debug)
-
-        if debug:
-            print("u_theta bounds:", (u_theta.lower_bounds[-1], u_theta.upper_bounds[-1]))
-
-        u_dt_theta = self.u_dt_theta
-        u_dt_theta.compute_bounds(debug=debug, backprop_mode=derivatives_backprop_mode)
-
-        if debug:
-            print("u_dt_theta bounds:", (u_dt_theta.lower_bounds[-1], u_dt_theta.upper_bounds[-1]))
-
-        u_dx_theta = self.u_dx_theta
-        u_dx_theta.compute_bounds(debug=debug, backprop_mode=derivatives_backprop_mode)
-
-        if debug:
-            print("u_dx_theta bounds:", (u_dx_theta.lower_bounds[-1], u_dx_theta.upper_bounds[-1]))
-
-        u_dxdx_theta = self.u_dxdx_theta
-        u_dxdx_theta.compute_bounds(debug=debug, backprop_mode=second_derivatives_backprop_mode)
-
-        if debug:
-            print("u_dxdx_theta bounds:", (u_dxdx_theta.lower_bounds[-1], u_dxdx_theta.upper_bounds[-1]))
-
-        # residual is u_dt_theta + u_theta * u_dx_theta - self.viscosity * u_dxdx_theta
-
-        u_theta_ubs, u_theta_lbs = u_theta.upper_bounds[-1], u_theta.lower_bounds[-1]
-        u_theta_coeffs_ubs, u_theta_consts_ubs, u_theta_coeffs_lbs, u_theta_consts_lbs = u_theta.layer_CROWN_coefficients[-1]
-
-        # u_dt_theta_ubs, u_dt_theta_lbs = u_dt_theta.upper_bounds[-1], u_dt_theta.lower_bounds[-1]
-        u_dt_theta_coeffs_ubs, u_dt_theta_consts_ubs = u_dt_theta.u_dxi_crown_coefficients_ubs[-1], u_dt_theta.u_dxi_crown_constants_ubs[-1]
-        u_dt_theta_coeffs_lbs, u_dt_theta_consts_lbs = u_dt_theta.u_dxi_crown_coefficients_lbs[-1], u_dt_theta.u_dxi_crown_constants_lbs[-1]
-
-        u_dx_theta_ubs, u_dx_theta_lbs = u_dx_theta.upper_bounds[-1], u_dx_theta.lower_bounds[-1]
-        u_dx_theta_coeffs_ubs, u_dx_theta_consts_ubs = u_dx_theta.u_dxi_crown_coefficients_ubs[-1], u_dx_theta.u_dxi_crown_constants_ubs[-1]
-        u_dx_theta_coeffs_lbs, u_dx_theta_consts_lbs = u_dx_theta.u_dxi_crown_coefficients_lbs[-1], u_dx_theta.u_dxi_crown_constants_lbs[-1]
-
-        # u_dxdx_theta_ubs, u_dxdx_theta_lbs = u_dxdx_theta.upper_bounds[-1], u_dxdx_theta.lower_bounds[-1]
-        u_dxdx_theta_coeffs_ubs, u_dxdx_theta_consts_ubs = u_dxdx_theta.u_dxixi_crown_coefficients_ubs[-1], u_dxdx_theta.u_dxixi_crown_constants_ubs[-1]
-        u_dxdx_theta_coeffs_lbs, u_dxdx_theta_consts_lbs = u_dxdx_theta.u_dxixi_crown_coefficients_lbs[-1], u_dxdx_theta.u_dxixi_crown_constants_lbs[-1]
-
-        # McCormick relaxation of u_theta * u_dx_theta
-        alpha_U, alpha_L = 0.5, 0.5
-
-        beta_0_U = alpha_U * u_theta_ubs + (1 - alpha_U) * u_theta_lbs
-        beta_1_U = alpha_U * u_dx_theta_lbs + (1 - alpha_U) * u_dx_theta_ubs
-        beta_2_U = - alpha_U * u_theta_ubs * u_dx_theta_lbs - (1 - alpha_U) * u_theta_lbs * u_dx_theta_ubs
-
-        beta_0_L = alpha_L * u_theta_lbs + (1 - alpha_L) * u_theta_ubs
-        beta_1_L = alpha_L * u_dx_theta_lbs + (1 - alpha_L) * u_dx_theta_ubs
-        beta_2_L = - alpha_L * u_theta_lbs * u_dx_theta_lbs - (1 - alpha_L) * u_theta_ubs * u_dx_theta_ubs
-
-        mul_coefficient_U = beta_0_U.unsqueeze(1).clamp(min=0) * u_dx_theta_coeffs_ubs + beta_0_U.unsqueeze(1).clamp(max=0) * u_dx_theta_coeffs_lbs +\
-            beta_1_U.unsqueeze(1).clamp(min=0) * u_theta_coeffs_ubs + beta_1_U.unsqueeze(1).clamp(max=0) * u_theta_coeffs_lbs
-        mul_const_U = beta_0_U.clamp(min=0) * u_dx_theta_consts_ubs + beta_0_U.clamp(max=0) * u_dx_theta_consts_lbs +\
-            beta_1_U.clamp(min=0) * u_theta_consts_ubs + beta_1_U.clamp(max=0) * u_theta_consts_lbs+\
-            beta_2_U
-        
-        mul_coefficient_L = beta_0_L.unsqueeze(1).clamp(min=0) * u_dx_theta_coeffs_lbs + beta_0_L.unsqueeze(1).clamp(max=0) * u_dx_theta_coeffs_ubs +\
-            beta_1_L.unsqueeze(1).clamp(min=0) * u_theta_coeffs_lbs + beta_1_L.unsqueeze(1).clamp(max=0) * u_theta_coeffs_ubs
-        mul_const_L = beta_0_L.clamp(min=0) * u_dx_theta_consts_lbs + beta_0_L.clamp(max=0) * u_dx_theta_consts_ubs +\
-            beta_1_L.clamp(min=0) * u_theta_consts_lbs + beta_1_L.clamp(max=0) * u_theta_consts_ubs+\
-            beta_2_L
-
-        # sum of the correct coefficients to obtain the final ones
-        f_coefficients_U = u_dt_theta_coeffs_ubs + mul_coefficient_U - self.viscosity * u_dxdx_theta_coeffs_lbs
-        f_constant_U = u_dt_theta_consts_ubs + mul_const_U - self.viscosity * u_dxdx_theta_consts_lbs
-
-        f_coefficients_L = u_dt_theta_coeffs_lbs + mul_coefficient_L - self.viscosity * u_dxdx_theta_coeffs_ubs
-        f_constant_L = u_dt_theta_consts_lbs + mul_const_L - self.viscosity * u_dxdx_theta_consts_ubs
-
-        f_upper_bound = torch.sum(f_coefficients_U.clamp(min=0) * self.u_theta.x_ub.unsqueeze(1) + f_coefficients_U.clamp(max=0) * self.u_theta.x_lb.unsqueeze(1), dim=2) + f_constant_U
-        f_lower_bound = torch.sum(f_coefficients_L.clamp(min=0) * self.u_theta.x_lb.unsqueeze(1) + f_coefficients_L.clamp(max=0) * self.u_theta.x_ub.unsqueeze(1), dim=2) + f_constant_L
-
-        return f_upper_bound, f_lower_bound
