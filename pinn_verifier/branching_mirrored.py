@@ -5,7 +5,6 @@ import os
 import copy
 import time
 import json
-import pickle
 from typing import List
 from enum import Enum
 import itertools
@@ -32,7 +31,7 @@ def verbose_log(level: VerbosityLevel, message: str, msg_type: MessageType):
         print(message)
 
 
-def greedy_input_branching(
+def mirrored_greedy_input_branching(
         layers: List[torch.nn.Module],
         model: torch.nn.Module,
         domain_bounds: torch.Tensor,
@@ -40,15 +39,13 @@ def greedy_input_branching(
         verifier_fn: callable,
         output_filename: str,
         input_filename: str = None,
-        input_v1: bool = False,
         maximum_computations: int = 100,
         verbose: VerbosityLevel = VerbosityLevel.ALL_OUTPUT,
         save_frequency: int = 1,
-        grid_size: int = 50,
-        save_history: bool = False
+        grid_size: int = 50
 ):
     """Greedly branch on the input by calling the vertifier and empirical evaluation
-    functions.
+    functions; verification will include a mirror evaluation on the x domain.
 
     Args:
         layers (List[torch.nn.Module]): list of layers of the model
@@ -69,24 +66,28 @@ def greedy_input_branching(
         save_frequency (int, optional): saves output every `save_frequency` branches.
         grid_size (int, optional): size of the grid in each direction; will result in a
             (grid_size)^n grid, where n is the number of input dimensions.
-        save_history (bool, optional): whether to save the history or just the latest pieces
-            in output_filename
     """
 
     elapsed_time = 0
     debug_param = (verbose is VerbosityLevel.ALL_OUTPUT)
-    if save_history:
-        pieces_saved = []
-
+    pieces_saved = []
     Path(os.path.dirname(output_filename)).mkdir(parents=True, exist_ok=True)
 
     ts = torch.linspace(domain_bounds[0, 0], domain_bounds[1, 0], 100)
     xs = torch.linspace(domain_bounds[0, 1], domain_bounds[1, 1], 100)
     grid_ts, grid_xs = torch.meshgrid(ts, xs, indexing='ij')
-    grid_points = torch.dstack([grid_ts, grid_xs]).reshape(-1, 2)
+    grid_points_low = torch.dstack([grid_ts, grid_xs]).reshape(-1, 2)
 
-    model_pts = empirical_evaluation_fn(model, grid_points)
+    ts = torch.linspace(domain_bounds[0, 0], domain_bounds[1, 0], 100)
+    xs = torch.linspace(-domain_bounds[0, 1], -domain_bounds[1, 1], 100)
+    grid_ts, grid_xs = torch.meshgrid(ts, xs, indexing='ij')
+    grid_points_high = torch.dstack([grid_ts, grid_xs]).reshape(-1, 2)
+
+    model_pts = empirical_evaluation_fn(model, grid_points_low, grid_points_high)
     all_min, all_max = model_pts.min(), model_pts.max()
+
+    import pdb
+    pdb.set_trace()
 
     if input_filename is None:
         pieces = []
@@ -106,9 +107,14 @@ def greedy_input_branching(
         ts = torch.linspace(current_parent_piece[0, 0], current_parent_piece[1, 0], grid_size)
         xs = torch.linspace(current_parent_piece[0, 1], current_parent_piece[1, 1], grid_size)
         grid_ts, grid_xs = torch.meshgrid(ts, xs, indexing='ij')
-        grid_points = torch.dstack([grid_ts, grid_xs]).reshape(-1, 2)
+        grid_points_low = torch.dstack([grid_ts, grid_xs]).reshape(-1, 2)
 
-        model_pts = empirical_evaluation_fn(model, grid_points)
+        ts = torch.linspace(current_parent_piece[0, 0], current_parent_piece[1, 0], grid_size)
+        xs = torch.linspace(-current_parent_piece[0, 1], -current_parent_piece[1, 1], grid_size)
+        grid_ts, grid_xs = torch.meshgrid(ts, xs, indexing='ij')
+        grid_points_high = torch.dstack([grid_ts, grid_xs]).reshape(-1, 2)
+
+        model_pts = empirical_evaluation_fn(model, grid_points_low, grid_points_high)
         emp_min, emp_max = model_pts.min(), model_pts.max()
 
         try:
@@ -129,7 +135,7 @@ def greedy_input_branching(
             current_parent_piece.detach().numpy().tolist()
         ])
 
-        pieces_info = {
+        pieces_saved.append({
             "i": i,
             "n_pieces": len(pieces),
             "lb": piece_lb,
@@ -138,22 +144,13 @@ def greedy_input_branching(
             "elapsed_time": elapsed_time,
             "all_min": all_min.item(),
             "all_max": all_max.item()
-        }
-        if save_history:
-            pieces_saved.append(pieces_info)
-            pickle.dump(pieces_saved, open(output_filename, "wb"))
-        else:
-            pickle.dump(pieces_info, open(output_filename, "wb"))
+        })
+        json.dump(pieces_saved, open(output_filename, "w"))
     else:
-        if input_v1:
-            with open(input_filename, "r") as fp:
-                pieces_saved = json.load(fp)
-            
-            last_piece = pieces_saved[-1]
-        else:
-            with open(input_filename, "rb") as fp:
-                last_piece = pickle.load(fp)
+        with open(input_filename, "r") as fp:
+            pieces_saved = json.load(fp)
 
+        last_piece = pieces_saved[-1]
         pieces = last_piece["pieces"]
         i = last_piece["i"]
         elapsed_time = last_piece["elapsed_time"]
@@ -206,9 +203,14 @@ def greedy_input_branching(
             ts = torch.linspace(t_min, t_max, grid_size)
             xs = torch.linspace(x_min, x_max, grid_size)
             grid_ts, grid_xs = torch.meshgrid(ts, xs, indexing='ij')
-            grid_points = torch.dstack([grid_ts, grid_xs]).reshape(-1, 2)
+            grid_points_low = torch.dstack([grid_ts, grid_xs]).reshape(-1, 2)
 
-            model_pts = empirical_evaluation_fn(model, grid_points)
+            ts = torch.linspace(t_min, t_max, grid_size)
+            xs = torch.linspace(-x_min, -x_max, grid_size)
+            grid_ts, grid_xs = torch.meshgrid(ts, xs, indexing='ij')
+            grid_points_high = torch.dstack([grid_ts, grid_xs]).reshape(-1, 2)
+
+            model_pts = empirical_evaluation_fn(model, grid_points_low, grid_points_high)
             emp_min, emp_max = model_pts.min(), model_pts.max()
 
             try:
@@ -248,19 +250,15 @@ def greedy_input_branching(
         if last_save % save_frequency == 0:
             verbose_log(verbose, "Saving to file...", MessageType.GENERAL_OUTPUT)
 
-            pieces_info = {
+            pieces_saved.append({
                 "i": i-1,
                 "n_pieces": len(pieces),
                 "lb": pieces_lb,
                 "ub": pieces_ub,
                 "pieces": copy.deepcopy(pieces),
                 "elapsed_time": elapsed_time
-            }
-            if save_history:
-                pieces_saved.append(pieces_info)
-                pickle.dump(pieces_saved, open(output_filename, "wb"))
-            else:
-                pickle.dump(pieces_info, open(output_filename, "wb"))
+            })
+            json.dump(pieces_saved, open(output_filename, "w"))
 
             verbose_log(verbose, f"Total computation so far took {elapsed_time:2f} seconds", MessageType.GENERAL_OUTPUT)
 
@@ -277,19 +275,15 @@ def greedy_input_branching(
     pieces_ubs = [piece[2] for piece in pieces]
     pieces_ub = max(pieces_ubs)
 
-    pieces_info = {
+    pieces_saved.append({
         "i": i-1,
         "n_pieces": len(pieces),
         "lb": pieces_lb,
         "ub": pieces_ub,
         "pieces": copy.deepcopy(pieces),
         "elapsed_time": elapsed_time
-    }
-    if save_history:
-        pieces_saved.append(pieces_info)
-        pickle.dump(pieces_saved, open(output_filename, "wb"))
-    else:
-        pickle.dump(pieces_info, open(output_filename, "wb"))
+    })
+    json.dump(pieces_saved, open(output_filename, "w"))
 
     verbose_log(verbose, "-------------------------", MessageType.GENERAL_OUTPUT)
     verbose_log(verbose, "Full results:", MessageType.GENERAL_OUTPUT)

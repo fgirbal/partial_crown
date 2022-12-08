@@ -8,7 +8,8 @@ import torch
 from pinn_verifier.utils import load_compliant_model
 from pinn_verifier.activations import ActivationRelaxationType
 from pinn_verifier.activations.tanh import TanhRelaxation, TanhDerivativeRelaxation, TanhSecondDerivativeRelaxation
-from pinn_verifier.crown import CROWNPINNSolution, CROWNPINNPartialDerivative, CROWNPINNSecondPartialDerivative, CROWNBurgersVerifier
+from pinn_verifier.crown import CROWNPINNSolution, CROWNPINNPartialDerivative, CROWNPINNSecondPartialDerivative
+# from pinn_verifier.burgers import CROWNBurgersVerifier
 
 
 def compute_torch_gradient_dt(model, X_r):
@@ -65,7 +66,7 @@ def fn_test_at_point(model: torch.nn.Module, layers: List[torch.nn.Module], inpu
     u_dt_theta = CROWNPINNPartialDerivative(
         u_theta,
         component_idx=0,
-        activation_derivative_relaxation=TanhDerivativeRelaxation(ActivationRelaxationType.MULTI_LINE)
+        activation_derivative_relaxation=TanhDerivativeRelaxation(ActivationRelaxationType.SINGLE_LINE)
     )
     u_dt_theta.compute_bounds(debug=False)
 
@@ -78,7 +79,7 @@ def fn_test_at_point(model: torch.nn.Module, layers: List[torch.nn.Module], inpu
     u_dx_theta = CROWNPINNPartialDerivative(
         u_theta,
         component_idx=1,
-        activation_derivative_relaxation=TanhDerivativeRelaxation(ActivationRelaxationType.MULTI_LINE)
+        activation_derivative_relaxation=TanhDerivativeRelaxation(ActivationRelaxationType.SINGLE_LINE)
     )
     u_dx_theta.compute_bounds(debug=False)
 
@@ -91,7 +92,7 @@ def fn_test_at_point(model: torch.nn.Module, layers: List[torch.nn.Module], inpu
     u_dxdx_theta = CROWNPINNSecondPartialDerivative(
         u_dx_theta,
         component_idx=1,
-        activation_derivative_derivative_relaxation=TanhSecondDerivativeRelaxation(ActivationRelaxationType.MULTI_LINE)
+        activation_derivative_derivative_relaxation=TanhSecondDerivativeRelaxation(ActivationRelaxationType.SINGLE_LINE)
     )
     u_dxdx_theta.compute_bounds(debug=False)
 

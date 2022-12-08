@@ -1,17 +1,29 @@
 import time
 import copy
 from enum import Enum
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 from tqdm import tqdm
 import numpy as np
 import torch
-
 from tools.custom_torch_modules import Add, Mul
+
 from pinn_verifier.activations.activation_relaxations import ActivationRelaxationType, ActivationRelaxation
 
 supported_normalization_ops = [Add, Mul]
 supported_activations = [torch.nn.Softplus, torch.nn.Tanh]
+
+
+def get_single_line_mccormick_coefficients(x_L: torch.Tensor, x_U: torch.Tensor, y_L: torch.Tensor, y_U: torch.Tensor, alpha_upper_bounds: Optional[float] = 0.5, alpha_lower_bounds: Optional[float] = 0.5):
+    coeffs_y_lbs = alpha_lower_bounds * x_L + (1 - alpha_lower_bounds) * x_U
+    coeffs_x_lbs = alpha_lower_bounds * y_L + (1 - alpha_lower_bounds) * y_U
+    coeffs_const_lbs = alpha_lower_bounds * (- x_L * y_L) + (1 - alpha_lower_bounds) * (- x_U * y_U)
+
+    coeffs_y_ubs = alpha_upper_bounds * x_U + (1 - alpha_upper_bounds) * x_L
+    coeffs_x_ubs = alpha_upper_bounds * y_L + (1 - alpha_upper_bounds) * y_U
+    coeffs_const_ubs = alpha_upper_bounds * (- x_U * y_L) + (1 - alpha_upper_bounds) * (- x_L * y_U)
+
+    return (coeffs_y_lbs, coeffs_x_lbs, coeffs_const_lbs), (coeffs_y_ubs, coeffs_x_ubs, coeffs_const_ubs)
 
 
 class BackpropMode(Enum):
@@ -105,8 +117,8 @@ class CROWNPINNSolution():
                 else:
                     return False
         
-        # current computation expects a single output PINN
-        if type(model[-1]) != torch.nn.Linear or model[-1].weight.shape[0] != 1:
+        # current computation expects a linear layer output
+        if type(model[-1]) != torch.nn.Linear:
             return False
 
         # all conditions are satisfied, so this PINN is supported
@@ -297,6 +309,8 @@ class CROWNPINNSolution():
         return UB_final, LB_final, (f_U_A_0, f_U_constant, f_L_A_0, f_L_constant)
 
     def compute_bounds(self, debug: bool = True, backprop_mode: BackpropMode = BackpropMode.FULL_BACKPROP):
+        total_computation_time = time.time()
+
         domain_bounds = self.domain_bounds
 
         if debug:
@@ -359,8 +373,10 @@ class CROWNPINNSolution():
                 # batch compute the activation relaxations
                 s = time.time()
                 layer_output_lines = torch.Tensor([self.activation_relaxation.get_bounds(lb, ub) for lb, ub in zip(pre_act_LBs[-1].flatten(), pre_act_UBs[-1].flatten())]).reshape(-1, 4)
-                layer_output_lines[:, 1] = layer_output_lines[:, 1] / (layer_output_lines[:, 0] - 1e-8)
-                layer_output_lines[:, 3] = layer_output_lines[:, 3] / (layer_output_lines[:, 2] - 1e-8)
+                non_zero_ub_m = torch.where(layer_output_lines[:, 0] != 0.0)[0]
+                non_zero_lb_m = torch.where(layer_output_lines[:, 2] != 0.0)[0]
+                layer_output_lines[non_zero_ub_m, 1] = (layer_output_lines[non_zero_ub_m, 1]) / (layer_output_lines[non_zero_ub_m, 0])
+                layer_output_lines[non_zero_lb_m, 3] = (layer_output_lines[non_zero_lb_m, 3]) / (layer_output_lines[non_zero_lb_m, 2])
 
                 layer_output_lines = layer_output_lines.reshape(*pre_act_UBs[-1].shape, 4)
 
@@ -462,6 +478,7 @@ class CROWNPINNSolution():
         self.layers_output_alpha_betas = layers_output_alpha_betas
         self.computed_bounds = True
         self.computation_times['activation_relaxations'] = activation_relaxation_time
+        self.computation_times['total_computation_time'] = (time.time() - total_computation_time)
 
 
 class CROWNPINNPartialDerivative():
@@ -601,12 +618,23 @@ class CROWNPINNPartialDerivative():
                         last_W_pos = last_W.clamp(min=0)
                         last_W_neg = last_W.clamp(max=0)
 
+                        # import pdb
+                        # pdb.set_trace()
+
+                        # rho_0_U = (alpha_k_0.transpose(1, 2) @ last_W_pos.T + beta_k_0.transpose(1, 2) @ last_W_neg.T).transpose(1, 2)
+                        # rho_1_U = (alpha_k_3.reshape(batch_size, alpha_k_3.shape[1], -1).transpose(1, 2) @ last_W_pos.T + beta_k_3.reshape(batch_size, beta_k_3.shape[1], -1).transpose(1, 2) @ last_W_neg.T).reshape(batch_size, last_W_pos.shape[0], *alpha_k_3.shape[2:])
+                        # rho_2_U = (alpha_k_4.transpose(1, 2) @ last_W_pos.T + beta_k_4.transpose(1, 2) @ last_W_neg.T).transpose(1, 2)
+
+                        # rho_0_L = (beta_k_0.transpose(1, 2) @ last_W_pos.T + alpha_k_0.transpose(1, 2) @ last_W_neg.T).transpose(1, 2)
+                        # rho_1_L = (beta_k_3.reshape(batch_size, beta_k_3.shape[1], -1).transpose(1, 2) @ last_W_pos.T + alpha_k_3.reshape(batch_size, alpha_k_3.shape[1], -1).transpose(1, 2) @ last_W_neg.T).reshape(batch_size, last_W_pos.shape[0], *beta_k_3.shape[2:])
+                        # rho_2_L = (beta_k_4.transpose(1, 2) @ last_W_pos.T + alpha_k_4.transpose(1, 2) @ last_W_neg.T).transpose(1, 2)
+
                         rho_0_U = (alpha_k_0.transpose(1, 2) @ last_W_pos.T + beta_k_0.transpose(1, 2) @ last_W_neg.T).transpose(1, 2)
-                        rho_1_U = (alpha_k_3.reshape(batch_size, alpha_k_3.shape[1], -1).transpose(1, 2) @ last_W_pos.T + beta_k_3.reshape(batch_size, beta_k_3.shape[1], -1).transpose(1, 2) @ last_W_neg.T).reshape(batch_size, last_W_pos.shape[0], *alpha_k_3.shape[2:])
+                        rho_1_U = (alpha_k_3.reshape(batch_size, alpha_k_3.shape[1], -1).transpose(1, 2) @ last_W_pos.T + beta_k_3.reshape(batch_size, beta_k_3.shape[1], -1).transpose(1, 2) @ last_W_neg.T).transpose(1, 2).reshape(batch_size, last_W_pos.shape[0], alpha_k_3.shape[2], alpha_k_3.shape[3])
                         rho_2_U = (alpha_k_4.transpose(1, 2) @ last_W_pos.T + beta_k_4.transpose(1, 2) @ last_W_neg.T).transpose(1, 2)
 
                         rho_0_L = (beta_k_0.transpose(1, 2) @ last_W_pos.T + alpha_k_0.transpose(1, 2) @ last_W_neg.T).transpose(1, 2)
-                        rho_1_L = (beta_k_3.reshape(batch_size, beta_k_3.shape[1], -1).transpose(1, 2) @ last_W_pos.T + alpha_k_3.reshape(batch_size, alpha_k_3.shape[1], -1).transpose(1, 2) @ last_W_neg.T).reshape(batch_size, last_W_pos.shape[0], *beta_k_3.shape[2:])
+                        rho_1_L = (beta_k_3.reshape(batch_size, beta_k_3.shape[1], -1).transpose(1, 2) @ last_W_pos.T + alpha_k_3.reshape(batch_size, alpha_k_3.shape[1], -1).transpose(1, 2) @ last_W_neg.T).transpose(1, 2).reshape(batch_size, last_W_pos.shape[0], beta_k_3.shape[2], beta_k_3.shape[3])
                         rho_2_L = (beta_k_4.transpose(1, 2) @ last_W_pos.T + alpha_k_4.transpose(1, 2) @ last_W_neg.T).transpose(1, 2)
                     else:
                         # it's just a middle layer, we want to compute it's output directly
@@ -844,6 +872,7 @@ class CROWNPINNPartialDerivative():
         return layer_output_upper_bounds, layer_output_lower_bounds, (layer_crown_U_coefficients, layer_crown_U_constants, layer_crown_L_coefficients, layer_crown_L_constants)
     
     def compute_bounds(self, debug: bool = True, lp_first_matmul_bounds=None, lp_layer_output_bounds=None, backprop_mode: BackpropMode = BackpropMode.COMPONENT_BACKPROP):
+        total_computation_time = time.time()
         self.x_lb = self.u_theta.x_lb
         self.x_ub = self.u_theta.x_ub
 
@@ -894,7 +923,7 @@ class CROWNPINNPartialDerivative():
 
             # debug computation with interval midpoint
             if debug:
-                norm_point = self.u_theta.domain_bounds.mean(dim=0)
+                norm_point = self.u_theta.domain_bounds.mean(dim=1)
                 norm_grad = copy.deepcopy(norm_layer_partial_grad).T
                 for norm_layer in self.u_theta.norm_layers:
                     norm_point = norm_layer(norm_point)
@@ -944,8 +973,11 @@ class CROWNPINNPartialDerivative():
 
                     s = time.time()
                     layer_output_lines = torch.Tensor([self.activation_derivative_relaxation.get_bounds(lb, ub) for lb, ub in zip(pre_act_LBs.flatten(), pre_act_UBs.flatten())]).reshape(-1, 4)
-                    layer_output_lines[:, 1] = (layer_output_lines[:, 1]) / (layer_output_lines[:, 0] - 1e-12)
-                    layer_output_lines[:, 3] = (layer_output_lines[:, 3]) / (layer_output_lines[:, 2] - 1e-12)
+                    
+                    non_zero_lb_m = torch.where(layer_output_lines[:, 0] != 0.0)[0]
+                    non_zero_ub_m = torch.where(layer_output_lines[:, 2] != 0.0)[0]
+                    layer_output_lines[non_zero_lb_m, 1] = (layer_output_lines[non_zero_lb_m, 1]) / (layer_output_lines[non_zero_lb_m, 0])
+                    layer_output_lines[non_zero_ub_m, 3] = (layer_output_lines[non_zero_ub_m, 3]) / (layer_output_lines[non_zero_ub_m, 2])
 
                     layer_output_lines = layer_output_lines.reshape(*pre_act_UBs.shape, 4)
                     layers_activation_derivative_output_bounds.append(layer_output_lines)
@@ -1069,20 +1101,23 @@ class CROWNPINNPartialDerivative():
                     if debug:
                         # not the last layer
                         first_matmul_ubs, first_matmul_lbs = self.partial_z_k_z_k_1_ubs[-1], self.partial_z_k_z_k_1_lbs[-1]
-                    
+
                         try:
                             # 1. all lower bounds should be smaller than upper bounds
                             assert all((first_matmul_lbs <= first_matmul_ubs).flatten())
                             assert all((layer_output_lower_bounds <= layer_output_upper_bounds).flatten())
 
                             # 2. a random point in the interval needs to be inside the bounds
-                            point_vals_first_mul = torch.diag(self.activation_derivative_relaxation.evaluate(norm_point)) @ weight
+                            if norm_point.shape[0] != 1:
+                                raise NotImplementedError('debug only works for a single input domain...')
+
+                            point_vals_first_mul = torch.diag(self.activation_derivative_relaxation.evaluate(norm_point).flatten()) @ weight
                             norm_grad = point_vals_first_mul @ norm_grad
 
                             assert all((point_vals_first_mul <= first_matmul_ubs + 1e-2).flatten())
-                            assert all(norm_grad.flatten() <= layer_output_upper_bounds)
+                            assert all(norm_grad.flatten() <= layer_output_upper_bounds.flatten())
                             assert all((point_vals_first_mul >= first_matmul_lbs - 1e-2).flatten())
-                            assert all(norm_grad.flatten() >= layer_output_lower_bounds)
+                            assert all(norm_grad.flatten() >= layer_output_lower_bounds.flatten())
 
                             # 3. the CROWN bounds must be looser than the LP ones
                             if lp_first_matmul_bounds:
@@ -1097,6 +1132,8 @@ class CROWNPINNPartialDerivative():
                             print('--- exception ---')
                             import pdb
                             pdb.set_trace()
+
+                            print('exit exception...')
                 else:
                     # it is the final layer
                     if backprop_mode == BackpropMode.BLOCK_BACKPROP:
@@ -1132,8 +1169,8 @@ class CROWNPINNPartialDerivative():
 
                             # 2. a random point in the interval needs to be inside the bounds
                             norm_grad = weight @ norm_grad
-                            assert all(norm_grad.flatten() <= layer_output_upper_bounds)
-                            assert all(norm_grad.flatten() >= layer_output_lower_bounds)
+                            assert all(norm_grad.flatten() <= layer_output_upper_bounds.flatten())
+                            assert all(norm_grad.flatten() >= layer_output_lower_bounds.flatten())
 
                             # 3. the CROWN bounds must be looser than the LP ones
                             if lp_layer_output_bounds:
@@ -1143,6 +1180,8 @@ class CROWNPINNPartialDerivative():
                             print('--- exception ---')
                             import pdb
                             pdb.set_trace()
+
+                            print('exit exception...')
 
                 u_dxi_lower_bounds.append(layer_output_lower_bounds.detach())
                 u_dxi_upper_bounds.append(layer_output_upper_bounds.detach())
@@ -1154,6 +1193,7 @@ class CROWNPINNPartialDerivative():
 
         self.computed_bounds = True
         self.computation_times['activation_relaxations'] = activation_relaxation_time
+        self.computation_times['total_computation_time'] = (time.time() - total_computation_time)
 
 
 class CROWNPINNSecondPartialDerivative():
@@ -1377,11 +1417,11 @@ class CROWNPINNSecondPartialDerivative():
                         last_W_neg = last_W.clamp(max=0)
 
                         rho_0_U = (alpha_k_2.transpose(1, 2) @ last_W_pos.T + beta_k_2.transpose(1, 2) @ last_W_neg.T).transpose(1, 2)
-                        rho_1_U = (alpha_k_5.reshape(batch_size, alpha_k_5.shape[1], -1).transpose(1, 2) @ last_W_pos.T + beta_k_5.reshape(batch_size, beta_k_5.shape[1], -1).transpose(1, 2) @ last_W_neg.T).reshape(batch_size, last_W_pos.shape[0], *alpha_k_5.shape[2:])
+                        rho_1_U = (alpha_k_5.reshape(batch_size, alpha_k_5.shape[1], -1).transpose(1, 2) @ last_W_pos.T + beta_k_5.reshape(batch_size, beta_k_5.shape[1], -1).transpose(1, 2) @ last_W_neg.T).transpose(1, 2).reshape(batch_size, last_W_pos.shape[0], *alpha_k_5.shape[2:])
                         rho_2_U = (alpha_k_6.transpose(1, 2) @ last_W_pos.T + beta_k_6.transpose(1, 2) @ last_W_neg.T).transpose(1, 2)
 
                         rho_0_L = (beta_k_2.transpose(1, 2) @ last_W_pos.T + alpha_k_2.transpose(1, 2) @ last_W_neg.T).transpose(1, 2)
-                        rho_1_L = (beta_k_5.reshape(batch_size, beta_k_5.shape[1], -1).transpose(1, 2) @ last_W_pos.T + alpha_k_5.reshape(batch_size, alpha_k_5.shape[1], -1).transpose(1, 2) @ last_W_neg.T).reshape(batch_size, last_W_pos.shape[0], *beta_k_5.shape[2:])
+                        rho_1_L = (beta_k_5.reshape(batch_size, beta_k_5.shape[1], -1).transpose(1, 2) @ last_W_pos.T + alpha_k_5.reshape(batch_size, alpha_k_5.shape[1], -1).transpose(1, 2) @ last_W_neg.T).transpose(1, 2).reshape(batch_size, last_W_pos.shape[0], *beta_k_5.shape[2:])
                         rho_2_L = (beta_k_6.transpose(1, 2) @ last_W_pos.T + alpha_k_6.transpose(1, 2) @ last_W_neg.T).transpose(1, 2)
                     else:
                         # it's just a middle layer, we want to compute it's output directly
@@ -1418,386 +1458,395 @@ class CROWNPINNSecondPartialDerivative():
         return layer_output_upper_bounds, layer_output_lower_bounds, (layer_crown_U_coefficients, layer_crown_U_constants, layer_crown_L_coefficients, layer_crown_L_constants)
     
     def compute_bounds(self, debug: bool = True, LP_bounds = None, backprop_mode: BackpropMode = BackpropMode.COMPONENT_BACKPROP):
-        self.x_lb = self.u_theta.x_lb
-        self.x_ub = self.u_theta.x_ub
+        total_computation_time = time.time()
 
-        # if we haven't computed the intermediate bounds on u_theta, do it now
-        if not self.u_dxi_theta.computed_bounds:
-            self.u_dxi_theta.compute_bounds(debug=debug)
+        with torch.no_grad():
+            self.x_lb = self.u_theta.x_lb
+            self.x_ub = self.u_theta.x_ub
 
-        # proceed if the computation is successful and these variables are now populated
-        assert self.u_theta.computed_bounds
-        assert self.u_dxi_theta.computed_bounds
+            # if we haven't computed the intermediate bounds on u_theta, do it now
+            if not self.u_dxi_theta.computed_bounds:
+                self.u_dxi_theta.compute_bounds(debug=debug)
 
-        u_theta = self.u_theta
-        u_dxi_theta = self.u_dxi_theta
+            # proceed if the computation is successful and these variables are now populated
+            assert self.u_theta.computed_bounds
+            assert self.u_dxi_theta.computed_bounds
 
-        rho_k = 0.5
-        tau_k = 0.5
-        eta_k, gamma_k = 0.5, 0.5
-        zeta_k, delta_k = 0.5, 0.5
+            u_theta = self.u_theta
+            u_dxi_theta = self.u_dxi_theta
 
-        # computing a bound on $\partial_t u_theta$ using the previously computed bounds
-        u_dxixi_lower_bounds = self.lower_bounds
-        u_dxixi_upper_bounds = self.upper_bounds
-        self.first_sum_term_lbs = []
-        self.first_sum_term_ubs = []
-        self.second_sum_term_lbs = []
-        self.second_sum_term_ubs = []
+            rho_k = 0.5
+            tau_k = 0.5
+            eta_k, gamma_k = 0.5, 0.5
+            zeta_k, delta_k = 0.5, 0.5
 
-        # d_psi_0_dx_i is equal to 0 (second derivative of x with respect to x_i) and it'll remain the
-        # same through the normalization layers
-        # zero_vec = [0 for _ in range(u_theta.fc_layers[0].weight.shape[1])]
-        zero_vec = torch.zeros(self.x_lb.shape[0], u_theta.fc_layers[0].weight.shape[1])
-        u_dxixi_lower_bounds.append(zero_vec)
-        u_dxixi_upper_bounds.append(zero_vec)
+            # computing a bound on $\partial_t u_theta$ using the previously computed bounds
+            u_dxixi_lower_bounds = self.lower_bounds
+            u_dxixi_upper_bounds = self.upper_bounds
+            self.first_sum_term_lbs = []
+            self.first_sum_term_ubs = []
+            self.second_sum_term_lbs = []
+            self.second_sum_term_ubs = []
 
-        self.u_dxixi_crown_coefficients_lbs = [torch.zeros_like(zero_vec)]
-        self.u_dxixi_crown_constants_lbs = [u_dxixi_lower_bounds[-1]]
-        self.u_dxixi_crown_coefficients_ubs = [torch.zeros_like(zero_vec)]
-        self.u_dxixi_crown_constants_ubs = [u_dxixi_upper_bounds[-1]]
+            # d_psi_0_dx_i is equal to 0 (second derivative of x with respect to x_i) and it'll remain the
+            # same through the normalization layers
+            # zero_vec = [0 for _ in range(u_theta.fc_layers[0].weight.shape[1])]
+            zero_vec = torch.zeros(self.x_lb.shape[0], u_theta.fc_layers[0].weight.shape[1])
+            u_dxixi_lower_bounds.append(zero_vec)
+            u_dxixi_upper_bounds.append(zero_vec)
 
-        # debug computation with interval midpoint
-        if debug:
-            norm_point = self.u_theta.domain_bounds.mean(dim=0)
-            norm_grad = copy.deepcopy(self.u_dxi_theta.lower_bounds[0]).unsqueeze(1)
-            norm_d_xi_xi_d_z_k_1 = torch.tensor([[0, 0]], dtype=torch.float).T
+            self.u_dxixi_crown_coefficients_lbs = [torch.zeros_like(zero_vec)]
+            self.u_dxixi_crown_constants_lbs = [u_dxixi_lower_bounds[-1]]
+            self.u_dxixi_crown_coefficients_ubs = [torch.zeros_like(zero_vec)]
+            self.u_dxixi_crown_constants_ubs = [u_dxixi_upper_bounds[-1]]
 
-            for norm_layer in self.u_theta.norm_layers:
-                norm_point = norm_layer(norm_point)
-
-        it_object = u_theta.fc_layers
-        if debug:
-            print(f"Propagating LP bounds through d^2u_theta/dx{self.component_idx}^2...")
-            it_object = tqdm(u_theta.fc_layers)
-
-        layers_activation_second_derivative_output_lines = []
-        layers_activation_second_derivative_actual_bounds = []
-        if backprop_mode is BackpropMode.COMPONENT_BACKPROP:
-            self.component_non_backward_dependencies = {}
-
-        activation_relaxation_time = 0
-
-        for n_layer, layer in enumerate(it_object):
+            # debug computation with interval midpoint
             if debug:
-                norm_point = layer(norm_point)
+                norm_point = self.u_theta.domain_bounds.mean(dim=0)
+                norm_grad = copy.deepcopy(self.u_dxi_theta.lower_bounds[0]).unsqueeze(1)
+                norm_d_xi_xi_d_z_k_1 = torch.tensor([[0, 0]], dtype=torch.float).T
 
-            if not isinstance(layer, torch.nn.Linear):
-                continue
-        
-            is_final = (n_layer == len(u_theta.fc_layers) - 1)
-            u_dxixi_lbs = u_dxixi_lower_bounds[-1]
-            u_dxixi_ubs = u_dxixi_upper_bounds[-1]
-            u_dxixi_crown_coeffs_lbs = self.u_dxixi_crown_coefficients_lbs[-1]
-            u_dxixi_crown_consts_lbs = self.u_dxixi_crown_constants_lbs[-1]
-            u_dxixi_crown_coeffs_ubs = self.u_dxixi_crown_coefficients_ubs[-1]
-            u_dxixi_crown_consts_ubs = self.u_dxixi_crown_constants_ubs[-1]
+                for norm_layer in self.u_theta.norm_layers:
+                    norm_point = norm_layer(norm_point)
 
-            weight = layer.weight
-            W_pos = torch.clamp(weight, min=0)
-            W_neg = torch.clamp(weight, max=0)
+            it_object = u_theta.fc_layers
+            if debug:
+                print(f"Propagating LP bounds through d^2u_theta/dx{self.component_idx}^2...")
+                it_object = tqdm(u_theta.fc_layers)
 
-            if not is_final:
-                # hybrid CROWN computation; fetch bounds, coefficients and constants from u_theta and u_dxi_theta
-                # from u_theta: y^(k) lower and upper bounds
-                y_k_lbs, y_k_ubs = u_theta.lower_bounds[n_layer+1], self.u_theta.upper_bounds[n_layer+1]
-                A_k_U, a_k_U, A_k_L, a_k_L = u_theta.layer_CROWN_coefficients[n_layer // 2]
+            layers_activation_second_derivative_output_lines = []
+            layers_activation_second_derivative_actual_bounds = []
+            if backprop_mode is BackpropMode.COMPONENT_BACKPROP:
+                self.component_non_backward_dependencies = {}
 
-                # from u_dxi_theta: \partial_{x_i} z^{(k-1)} lower and upper bounds (layers in u_dxi_theta)
-                partial_dxi_z_k_1_lbs, partial_dxi_z_k_1_ubs = u_dxi_theta.lower_bounds[n_layer // 2], u_dxi_theta.upper_bounds[n_layer // 2]
-                C_k_L, c_k_L = u_dxi_theta.u_dxi_crown_coefficients_lbs[n_layer // 2], u_dxi_theta.u_dxi_crown_constants_lbs[n_layer // 2]
-                C_k_U, c_k_U = u_dxi_theta.u_dxi_crown_coefficients_ubs[n_layer // 2], u_dxi_theta.u_dxi_crown_constants_ubs[n_layer // 2]
+            activation_relaxation_time = 0
 
-                # from u_dxi_theta: \partial_{z^{k-1}} z^k lower and upper bounds
-                partial_dz_k_1_z_k_lbs, partial_dz_k_1_z_k_ubs = u_dxi_theta.partial_z_k_z_k_1_lbs[n_layer // 2], u_dxi_theta.partial_z_k_z_k_1_ubs[n_layer // 2]
-                D_k_L, d_k_L = u_dxi_theta.partial_z_k_z_k_1_coefficients_lbs[n_layer // 2], u_dxi_theta.partial_z_k_z_k_1_constants_lbs[n_layer // 2]
-                D_k_U, d_k_U = u_dxi_theta.partial_z_k_z_k_1_coefficients_ubs[n_layer // 2], u_dxi_theta.partial_z_k_z_k_1_constants_ubs[n_layer // 2]
-
-                # use the bounds to relax sigma''(y^(k)) for all outputs
-                if self.activation_derivative_derivative_relaxation.type is ActivationRelaxationType.MULTI_LINE:
-                    raise NotImplementedError("plase choose a single line activation type for current codebase")
-
-                s = time.time()
-                layer_output_lines = torch.Tensor([self.activation_derivative_derivative_relaxation.get_bounds(lb, ub) for lb, ub in zip(y_k_lbs.flatten(), y_k_ubs.flatten())]).reshape(-1, 4)
-                layer_output_lines[:, 1] = (layer_output_lines[:, 1]) / (layer_output_lines[:, 0] - 1e-12)
-                layer_output_lines[:, 3] = (layer_output_lines[:, 3]) / (layer_output_lines[:, 2] - 1e-12)
-
-                layer_output_lines = layer_output_lines.reshape(*y_k_lbs.shape, 4)
-                layer_actual_bounds = torch.Tensor([self.activation_derivative_derivative_relaxation.get_lb_ub_in_interval(lb, ub) for lb, ub in zip(y_k_lbs.flatten(), y_k_ubs.flatten())]).reshape(*y_k_lbs.shape, 2)
-
-                layers_activation_second_derivative_output_lines.append(layer_output_lines)
-                layers_activation_second_derivative_actual_bounds.append(layer_actual_bounds)
-                activation_relaxation_time += (time.time() - s)
-
-                # layer_output_lines_ = torch.zeros(weight.shape[0], 4)
-                # layer_actual_bounds_ = torch.zeros(weight.shape[0], 2)
-                # for j in range(weight.shape[0]):
-                #     lb_lines, ub_lines = self.activation_derivative_derivative_relaxation.get_bounds(y_k_lbs[0][j], y_k_ubs[0][j])
-
-                #     if self.activation_derivative_derivative_relaxation.type is ActivationRelaxationType.MULTI_LINE:
-                #         # can only have a single bound, take a convex combination of them
-                #         m_combination_lb = torch.mean(torch.Tensor([m for m, b in lb_lines]))
-                #         b_combination_lb = torch.mean(torch.Tensor([b for m, b in lb_lines]))
-
-                #         m_combination_ub = torch.mean(torch.Tensor([m for m, b in ub_lines]))
-                #         b_combination_ub = torch.mean(torch.Tensor([b for m, b in ub_lines]))
-                #     elif self.activation_derivative_derivative_relaxation.type is ActivationRelaxationType.SINGLE_LINE:
-                #         m_combination_lb, b_combination_lb = lb_lines
-                #         m_combination_ub, b_combination_ub = ub_lines
-                #     else:
-                #         raise NotImplementedError
-
-                #     # CROWN line definition
-                #     if m_combination_lb != 0:
-                #         b_combination_lb /= m_combination_lb
-                    
-                #     if m_combination_ub != 0:
-                #         b_combination_ub /= m_combination_ub
-
-                #     layer_output_lines_[j, :] = torch.tensor([
-                #         m_combination_lb,
-                #         b_combination_lb,
-                #         m_combination_ub,
-                #         b_combination_ub
-                #     ])
-
-                #     layer_actual_bounds_[j, :] = torch.tensor(
-                #         self.activation_derivative_derivative_relaxation.get_lb_ub_in_interval(y_k_lbs[0][j], y_k_ubs[0][j])
-                #     )
-                
-                # layers_activation_second_derivative_output_lines.append(layer_output_lines_)
-                # layers_activation_second_derivative_actual_bounds.append(layer_actual_bounds_)
-
-                if backprop_mode == BackpropMode.BLOCK_BACKPROP:
-                    raise NotImplementedError('block backprop not adapted to batch computation method')
-
-                    # define E, e, and H, h as per the paper notation
-                    E_k_U = W_pos @ C_k_U + W_neg @ C_k_L
-                    e_k_U = W_pos @ c_k_U + W_neg @ c_k_L
-                    E_k_L = W_pos @ C_k_L + W_neg @ C_k_U
-                    e_k_L = W_pos @ c_k_L + W_neg @ c_k_U
-
-                    lambda_k_L, mu_k_L, lambda_k_U, mu_k_U = layer_output_lines.T
-                    lambda_k_L, mu_k_L = lambda_k_L.unsqueeze(1), mu_k_L.unsqueeze(1)
-                    lambda_k_U, mu_k_U = lambda_k_U.unsqueeze(1), mu_k_U.unsqueeze(1)
-
-                    H_k_U = lambda_k_U.clamp(min=0) * A_k_U + lambda_k_U.clamp(max=0) * A_k_L
-                    h_k_U = lambda_k_U.clamp(min=0) * a_k_U.unsqueeze(1) + lambda_k_U.clamp(max=0) * a_k_L.unsqueeze(1) + lambda_k_U * mu_k_U
-                    H_k_L = lambda_k_L.clamp(min=0) * A_k_L + lambda_k_L.clamp(max=0) * A_k_U
-                    h_k_L = lambda_k_L.clamp(min=0) * a_k_L.unsqueeze(1) + lambda_k_L.clamp(max=0) * a_k_U.unsqueeze(1) + lambda_k_L * mu_k_L
-
-                    # compute \theta_j^{(k),U} and \theta_j^{(k),L} using E_k_U_j, e_k_U_j, E_k_L_j, e_k_L_j to use in following McCormick relaxation
-                    theta_k_U = torch.sum(E_k_U.clamp(min=0) * self.x_ub + E_k_U.clamp(max=0) * self.x_lb, dim=1) + e_k_U
-                    theta_k_L = torch.sum(E_k_L.clamp(min=0) * self.x_lb + E_k_L.clamp(max=0) * self.x_ub, dim=1) + e_k_L
-                    theta_k_L, theta_k_U = theta_k_L.unsqueeze(1), theta_k_U.unsqueeze(1)
-
-                    # define \nu's for McCormick relaxation of first, element-wise multiplication
-                    # TODO: make rho_k_j and tau_k_j depend on actual bounds somehow
-                    iota_k_L, iota_k_U = layer_actual_bounds.T
-                    iota_k_L, iota_k_U = iota_k_L.unsqueeze(1), iota_k_U.unsqueeze(1)
-                    nu_k_U_0 = rho_k * iota_k_U + (1 - rho_k) * iota_k_L
-                    nu_k_U_1 = rho_k * theta_k_L + (1 - rho_k) * theta_k_U
-                    nu_k_U_2 = -rho_k * iota_k_U * theta_k_L - (1 - rho_k) * iota_k_L * theta_k_U
-
-                    nu_k_L_0 = tau_k * iota_k_L + (1 - tau_k) * iota_k_U
-                    nu_k_L_1 = tau_k * theta_k_L + (1 - tau_k) * theta_k_U
-                    nu_k_L_2 = -tau_k * iota_k_L * theta_k_L - (1 - tau_k) * iota_k_U * theta_k_U
-
-                    # define \upsilon's for the linear layer that comes after that
-                    upsilon_k_U_0 = nu_k_U_0 * W_pos + nu_k_L_0 * W_neg
-                    upsilon_k_U_1 = nu_k_U_1 * W_pos + nu_k_L_1 * W_neg
-                    upsilon_k_U_2 = nu_k_U_2 * W_pos + nu_k_L_2 * W_neg
-                    upsilon_k_U_0_pos, upsilon_k_U_0_neg = upsilon_k_U_0.clamp(min=0), upsilon_k_U_0.clamp(max=0)
-                    upsilon_k_U_1_pos, upsilon_k_U_1_neg = upsilon_k_U_1.clamp(min=0), upsilon_k_U_1.clamp(max=0)
-
-                    upsilon_k_L_0 = nu_k_L_0 * W_pos + nu_k_U_0 * W_neg
-                    upsilon_k_L_1 = nu_k_L_1 * W_pos + nu_k_U_1 * W_neg
-                    upsilon_k_L_2 = nu_k_L_2 * W_pos + nu_k_U_2 * W_neg
-                    upsilon_k_L_0_pos, upsilon_k_L_0_neg = upsilon_k_L_0.clamp(min=0), upsilon_k_L_0.clamp(max=0)
-                    upsilon_k_L_1_pos, upsilon_k_L_1_neg = upsilon_k_L_1.clamp(min=0), upsilon_k_L_1.clamp(max=0)
-
-                    # define M and m from the upsilon values
-                    M_k_U = upsilon_k_U_0_pos.unsqueeze(2) * E_k_U.unsqueeze(1).repeat(1, weight.shape[1], 1) +\
-                        upsilon_k_U_0_neg.unsqueeze(2) * E_k_L.unsqueeze(1).repeat(1, weight.shape[1], 1) +\
-                        upsilon_k_U_1_pos.unsqueeze(2) * H_k_U.unsqueeze(1).repeat(1, weight.shape[1], 1) +\
-                        upsilon_k_U_1_neg.unsqueeze(2) * H_k_L.unsqueeze(1).repeat(1, weight.shape[1], 1)
-                    m_k_U = upsilon_k_U_0_pos * e_k_U.unsqueeze(1).repeat(1, weight.shape[1]) +\
-                        upsilon_k_U_0_neg * e_k_L.unsqueeze(1).repeat(1, weight.shape[1]) +\
-                        upsilon_k_U_1_pos * h_k_U.repeat(1, weight.shape[1]) +\
-                        upsilon_k_U_1_neg * h_k_L.repeat(1, weight.shape[1]) +\
-                        upsilon_k_U_2
-                    
-                    M_k_L = upsilon_k_L_0_pos.unsqueeze(2) * E_k_L.unsqueeze(1).repeat(1, weight.shape[1], 1) +\
-                        upsilon_k_L_0_neg.unsqueeze(2) * E_k_U.unsqueeze(1).repeat(1, weight.shape[1], 1) +\
-                        upsilon_k_L_1_pos.unsqueeze(2) * H_k_L.unsqueeze(1).repeat(1, weight.shape[1], 1) +\
-                        upsilon_k_L_1_neg.unsqueeze(2) * H_k_U.unsqueeze(1).repeat(1, weight.shape[1], 1)
-                    m_k_L = upsilon_k_L_0_pos * e_k_L.unsqueeze(1).repeat(1, weight.shape[1]) +\
-                        upsilon_k_L_0_neg * e_k_U.unsqueeze(1).repeat(1, weight.shape[1]) +\
-                        upsilon_k_L_1_pos * h_k_L.repeat(1, weight.shape[1]) +\
-                        upsilon_k_L_1_neg * h_k_U.repeat(1, weight.shape[1]) +\
-                        upsilon_k_L_2
-                    
-                    partial_dxiz_k_1_z_k_ubs = torch.sum(M_k_U * ((M_k_U >= 0) * self.x_ub + (M_k_U < 0) * self.x_lb), dim=2) + m_k_U
-                    partial_dxiz_k_1_z_k_lbs = torch.sum(M_k_L * ((M_k_L >= 0) * self.x_lb + (M_k_L < 0) * self.x_ub), dim=2) + m_k_L
-
-                    # define all alphas and betas starting with _0, _1, _2, _3 and _4
-                    # TODO: eta_k_j_n and zeta_k_j_n depend on actual bounds somehow
-                    alpha_k_0 = eta_k * partial_dxiz_k_1_z_k_ubs + (1 - eta_k) * partial_dxiz_k_1_z_k_lbs
-                    alpha_k_1 = eta_k * partial_dxi_z_k_1_lbs + (1 - eta_k) * partial_dxi_z_k_1_ubs
-                    alpha_k_2 = gamma_k * partial_dz_k_1_z_k_ubs + (1 - gamma_k) * partial_dz_k_1_z_k_lbs
-                    alpha_k_3 = gamma_k * u_dxixi_lbs + (1 - gamma_k) * u_dxixi_ubs
-                    alpha_k_4 = - eta_k * partial_dxiz_k_1_z_k_ubs * partial_dxi_z_k_1_lbs - (1 - eta_k) * partial_dxiz_k_1_z_k_lbs * partial_dxi_z_k_1_ubs + - gamma_k * partial_dz_k_1_z_k_ubs * u_dxixi_lbs - (1 - gamma_k) * partial_dz_k_1_z_k_lbs * u_dxixi_ubs
-
-                    alpha_k_0_pos, alpha_k_0_neg = alpha_k_0.clamp(min=0), alpha_k_0.clamp(max=0)
-                    alpha_k_1_pos, alpha_k_1_neg = alpha_k_1.clamp(min=0), alpha_k_1.clamp(max=0)
-                    alpha_k_2_pos, alpha_k_2_neg = alpha_k_2.clamp(min=0), alpha_k_2.clamp(max=0)
-                    alpha_k_3_pos, alpha_k_3_neg = alpha_k_3.clamp(min=0), alpha_k_3.clamp(max=0)
-
-                    beta_k_0 = zeta_k * partial_dxiz_k_1_z_k_lbs + (1 - zeta_k) * partial_dxiz_k_1_z_k_ubs
-                    beta_k_1 = zeta_k * partial_dxi_z_k_1_lbs + (1 - zeta_k) * partial_dxi_z_k_1_ubs
-                    beta_k_2 = delta_k * partial_dz_k_1_z_k_lbs + (1 - delta_k) * partial_dz_k_1_z_k_ubs
-                    beta_k_3 = delta_k * u_dxixi_lbs + (1 - delta_k) * u_dxixi_ubs
-                    beta_k_4 = - zeta_k * partial_dxiz_k_1_z_k_lbs * partial_dxi_z_k_1_lbs - (1 - zeta_k) * partial_dxiz_k_1_z_k_ubs * partial_dxi_z_k_1_ubs +\
-                        - delta_k * partial_dz_k_1_z_k_lbs * u_dxixi_lbs - (1 - delta_k) * partial_dz_k_1_z_k_ubs * u_dxixi_ubs
-
-                    beta_k_0_pos, beta_k_0_neg = beta_k_0.clamp(min=0), beta_k_0.clamp(max=0)
-                    beta_k_1_pos, beta_k_1_neg = beta_k_1.clamp(min=0), beta_k_1.clamp(max=0)
-                    beta_k_2_pos, beta_k_2_neg = beta_k_2.clamp(min=0), beta_k_2.clamp(max=0)
-                    beta_k_3_pos, beta_k_3_neg = beta_k_3.clamp(min=0), beta_k_3.clamp(max=0)
-
-                    # define the alpha_5, alpha_6, beta_5, and beta_6 from Equation 19
-                    alpha_k_5 = alpha_k_0_pos.unsqueeze(2) * C_k_U.unsqueeze(0).repeat(weight.shape[0], 1, 1) + alpha_k_0_neg.unsqueeze(2) * C_k_L.unsqueeze(0).repeat(weight.shape[0], 1, 1) +\
-                        alpha_k_1_pos.unsqueeze(0).repeat(weight.shape[0], 1).unsqueeze(2) * M_k_U + alpha_k_1_neg.unsqueeze(0).repeat(weight.shape[0], 1).unsqueeze(2) * M_k_L +\
-                        alpha_k_3_pos.unsqueeze(0).repeat(weight.shape[0], 1).unsqueeze(2) * D_k_U + alpha_k_3_neg.unsqueeze(0).repeat(weight.shape[0], 1).unsqueeze(2) * D_k_L
-                    alpha_k_6 = alpha_k_0_pos * c_k_U.unsqueeze(0).repeat(weight.shape[0], 1) + alpha_k_0_neg * c_k_L.unsqueeze(0).repeat(weight.shape[0], 1) +\
-                        alpha_k_1_pos.unsqueeze(0).repeat(weight.shape[0], 1) * m_k_U + alpha_k_1_neg.unsqueeze(0).repeat(weight.shape[0], 1) * m_k_L +\
-                        alpha_k_3_pos.unsqueeze(0).repeat(weight.shape[0], 1) * d_k_U + alpha_k_3_neg.unsqueeze(0).repeat(weight.shape[0], 1) * d_k_L +\
-                        alpha_k_4
-                    
-                    beta_k_5 = beta_k_0_pos.unsqueeze(2) * C_k_L.unsqueeze(0).repeat(weight.shape[0], 1, 1) + beta_k_0_neg.unsqueeze(2) * C_k_U.unsqueeze(0).repeat(weight.shape[0], 1, 1) +\
-                        beta_k_1_pos.unsqueeze(0).repeat(weight.shape[0], 1).unsqueeze(2) * M_k_L + beta_k_1_neg.unsqueeze(0).repeat(weight.shape[0], 1).unsqueeze(2) * M_k_U +\
-                        beta_k_3_pos.unsqueeze(0).repeat(weight.shape[0], 1).unsqueeze(2) * D_k_L + beta_k_3_neg.unsqueeze(0).repeat(weight.shape[0], 1).unsqueeze(2) * D_k_U
-                    beta_k_6 = beta_k_0_pos * c_k_L.unsqueeze(0).repeat(weight.shape[0], 1) + beta_k_0_neg * c_k_U.unsqueeze(0).repeat(weight.shape[0], 1) +\
-                        beta_k_1_pos.unsqueeze(0).repeat(weight.shape[0], 1) * m_k_L + beta_k_1_neg.unsqueeze(0).repeat(weight.shape[0], 1) * m_k_U +\
-                        beta_k_3_pos.unsqueeze(0).repeat(weight.shape[0], 1) * d_k_L + beta_k_3_neg.unsqueeze(0).repeat(weight.shape[0], 1) * d_k_U +\
-                        beta_k_4
-                    
-                    # replacing \partial_{x_ix_i} z_n^{(k-1)} in Eq. 19 using the linear bounds from the previous layer
-                    alpha_k_7 = alpha_k_2_pos.unsqueeze(2) * u_dxixi_crown_coeffs_ubs.unsqueeze(0).repeat(weight.shape[0], 1, 1) + alpha_k_2_neg.unsqueeze(2) * u_dxixi_crown_coeffs_lbs.unsqueeze(0).repeat(weight.shape[0], 1, 1) + alpha_k_5
-                    alpha_k_8 = alpha_k_2_pos * u_dxixi_crown_consts_ubs.unsqueeze(0).repeat(weight.shape[0], 1) + alpha_k_2_neg * u_dxixi_crown_consts_lbs.unsqueeze(0).repeat(weight.shape[0], 1) + alpha_k_6
-                    sum_alpha_k_7 = alpha_k_7.sum(dim=1)
-                    sum_alpha_k_8 = alpha_k_8.sum(dim=1)
-                    new_u_dxixi_crown_coeffs_ubs, new_u_dxixi_crown_consts_ubs = sum_alpha_k_7, sum_alpha_k_8
-
-                    beta_k_7 = beta_k_2_pos.unsqueeze(2) * u_dxixi_crown_coeffs_lbs.unsqueeze(0).repeat(weight.shape[0], 1, 1) + beta_k_2_neg.unsqueeze(2) * u_dxixi_crown_coeffs_ubs.unsqueeze(0).repeat(weight.shape[0], 1, 1) + beta_k_5
-                    beta_k_8 = beta_k_2_pos * u_dxixi_crown_consts_lbs.unsqueeze(0).repeat(weight.shape[0], 1) + beta_k_2_neg * u_dxixi_crown_consts_ubs.unsqueeze(0).repeat(weight.shape[0], 1) + beta_k_6
-                    sum_beta_k_7 = beta_k_7.sum(dim=1)
-                    sum_beta_k_8 = beta_k_8.sum(dim=1)
-                    new_u_dxixi_crown_coeffs_lbs, new_u_dxixi_crown_consts_lbs = sum_beta_k_7, sum_beta_k_8
-
-                    layer_output_upper_bounds = torch.sum(new_u_dxixi_crown_coeffs_ubs * ((new_u_dxixi_crown_coeffs_ubs >= 0) * self.x_ub + (new_u_dxixi_crown_coeffs_ubs < 0) * self.x_lb), dim=1) + new_u_dxixi_crown_consts_ubs
-                    layer_output_lower_bounds = torch.sum(new_u_dxixi_crown_coeffs_lbs * ((new_u_dxixi_crown_coeffs_lbs >= 0) * self.x_lb + (new_u_dxixi_crown_coeffs_lbs < 0) * self.x_ub), dim=1) + new_u_dxixi_crown_consts_lbs
-                elif backprop_mode == BackpropMode.COMPONENT_BACKPROP:
-                    layer_output_upper_bounds, layer_output_lower_bounds, CROWN_coefficients = self.backward_component_propagation(
-                        self.u_theta.fc_layers[:n_layer+1],
-                        layers_activation_second_derivative_output_lines,
-                        layers_activation_second_derivative_actual_bounds,
-                        self.upper_bounds,
-                        self.lower_bounds,
-                        self.x_lb,
-                        self.x_ub,
-                        is_final=False
-                    )
-
-                    new_u_dxixi_crown_coeffs_ubs, new_u_dxixi_crown_consts_ubs = CROWN_coefficients[0], CROWN_coefficients[1]
-                    new_u_dxixi_crown_coeffs_lbs, new_u_dxixi_crown_consts_lbs = CROWN_coefficients[2], CROWN_coefficients[3]
-                else:
-                    raise NotImplementedError
-
+            for n_layer, layer in enumerate(it_object):
                 if debug:
-                    try:
-                        # 1. all lower bounds should be smaller than upper bounds
-                        assert all(layer_output_lower_bounds <= layer_output_upper_bounds)
+                    norm_point = layer(norm_point)
 
-                        # 2. a random point in the interval needs to be inside the bounds
-                        d_xi_z_k_1_d_z_k = torch.diag(self.activation_derivative_derivative_relaxation.evaluate(norm_point) * (weight @ norm_grad).flatten()) @ weight
-                        d_xi_d_z_k = torch.diag(self.u_dxi_theta.activation_derivative_relaxation.evaluate(norm_point)) @ weight
+                if not isinstance(layer, torch.nn.Linear):
+                    continue
+            
+                is_final = (n_layer == len(u_theta.fc_layers) - 1)
+                u_dxixi_lbs = u_dxixi_lower_bounds[-1]
+                u_dxixi_ubs = u_dxixi_upper_bounds[-1]
+                u_dxixi_crown_coeffs_lbs = self.u_dxixi_crown_coefficients_lbs[-1]
+                u_dxixi_crown_consts_lbs = self.u_dxixi_crown_constants_lbs[-1]
+                u_dxixi_crown_coeffs_ubs = self.u_dxixi_crown_coefficients_ubs[-1]
+                u_dxixi_crown_consts_ubs = self.u_dxixi_crown_constants_ubs[-1]
 
-                        d_xi_xi_d_z_k = d_xi_z_k_1_d_z_k @ norm_grad + d_xi_d_z_k @ norm_d_xi_xi_d_z_k_1
+                weight = layer.weight
+                W_pos = torch.clamp(weight, min=0)
+                W_neg = torch.clamp(weight, max=0)
 
-                        # all the partial derivative components must be fine
-                        assert all(d_xi_xi_d_z_k.flatten() <= layer_output_upper_bounds + 1e-4)
-                        assert all(d_xi_xi_d_z_k.flatten() >= layer_output_lower_bounds - 1e-4)
+                if not is_final:
+                    # hybrid CROWN computation; fetch bounds, coefficients and constants from u_theta and u_dxi_theta
+                    # from u_theta: y^(k) lower and upper bounds
+                    y_k_lbs, y_k_ubs = u_theta.lower_bounds[n_layer+1], self.u_theta.upper_bounds[n_layer+1]
+                    A_k_U, a_k_U, A_k_L, a_k_L = u_theta.layer_CROWN_coefficients[n_layer // 2]
+
+                    # from u_dxi_theta: \partial_{x_i} z^{(k-1)} lower and upper bounds (layers in u_dxi_theta)
+                    partial_dxi_z_k_1_lbs, partial_dxi_z_k_1_ubs = u_dxi_theta.lower_bounds[n_layer // 2], u_dxi_theta.upper_bounds[n_layer // 2]
+                    C_k_L, c_k_L = u_dxi_theta.u_dxi_crown_coefficients_lbs[n_layer // 2], u_dxi_theta.u_dxi_crown_constants_lbs[n_layer // 2]
+                    C_k_U, c_k_U = u_dxi_theta.u_dxi_crown_coefficients_ubs[n_layer // 2], u_dxi_theta.u_dxi_crown_constants_ubs[n_layer // 2]
+
+                    # from u_dxi_theta: \partial_{z^{k-1}} z^k lower and upper bounds
+                    partial_dz_k_1_z_k_lbs, partial_dz_k_1_z_k_ubs = u_dxi_theta.partial_z_k_z_k_1_lbs[n_layer // 2], u_dxi_theta.partial_z_k_z_k_1_ubs[n_layer // 2]
+                    D_k_L, d_k_L = u_dxi_theta.partial_z_k_z_k_1_coefficients_lbs[n_layer // 2], u_dxi_theta.partial_z_k_z_k_1_constants_lbs[n_layer // 2]
+                    D_k_U, d_k_U = u_dxi_theta.partial_z_k_z_k_1_coefficients_ubs[n_layer // 2], u_dxi_theta.partial_z_k_z_k_1_constants_ubs[n_layer // 2]
+
+                    # use the bounds to relax sigma''(y^(k)) for all outputs
+                    if self.activation_derivative_derivative_relaxation.type is ActivationRelaxationType.MULTI_LINE:
+                        raise NotImplementedError("plase choose a single line activation type for current codebase")
+
+                    s = time.time()
+                    layer_output_lines = torch.Tensor([self.activation_derivative_derivative_relaxation.get_bounds(lb, ub) for lb, ub in zip(y_k_lbs.flatten(), y_k_ubs.flatten())]).reshape(-1, 4)
+                    non_zero_ub_m = torch.where(layer_output_lines[:, 0] != 0.0)[0]
+                    non_zero_lb_m = torch.where(layer_output_lines[:, 2] != 0.0)[0]
+                    layer_output_lines[non_zero_ub_m, 1] = (layer_output_lines[non_zero_ub_m, 1]) / (layer_output_lines[non_zero_ub_m, 0])
+                    layer_output_lines[non_zero_lb_m, 3] = (layer_output_lines[non_zero_lb_m, 3]) / (layer_output_lines[non_zero_lb_m, 2])
+
+                    # layer_output_lines[:, 1] = (layer_output_lines[:, 1]) / (layer_output_lines[:, 0] - 1e-12)
+                    # layer_output_lines[:, 3] = (layer_output_lines[:, 3]) / (layer_output_lines[:, 2] - 1e-12)
+
+                    layer_output_lines = layer_output_lines.reshape(*y_k_lbs.shape, 4)
+                    layer_actual_bounds = torch.Tensor([self.activation_derivative_derivative_relaxation.get_lb_ub_in_interval(lb, ub) for lb, ub in zip(y_k_lbs.flatten(), y_k_ubs.flatten())]).reshape(*y_k_lbs.shape, 2)
+
+                    layers_activation_second_derivative_output_lines.append(layer_output_lines)
+                    layers_activation_second_derivative_actual_bounds.append(layer_actual_bounds)
+                    activation_relaxation_time += (time.time() - s)
+
+                    # layer_output_lines_ = torch.zeros(weight.shape[0], 4)
+                    # layer_actual_bounds_ = torch.zeros(weight.shape[0], 2)
+                    # for j in range(weight.shape[0]):
+                    #     lb_lines, ub_lines = self.activation_derivative_derivative_relaxation.get_bounds(y_k_lbs[0][j], y_k_ubs[0][j])
+
+                    #     if self.activation_derivative_derivative_relaxation.type is ActivationRelaxationType.MULTI_LINE:
+                    #         # can only have a single bound, take a convex combination of them
+                    #         m_combination_lb = torch.mean(torch.Tensor([m for m, b in lb_lines]))
+                    #         b_combination_lb = torch.mean(torch.Tensor([b for m, b in lb_lines]))
+
+                    #         m_combination_ub = torch.mean(torch.Tensor([m for m, b in ub_lines]))
+                    #         b_combination_ub = torch.mean(torch.Tensor([b for m, b in ub_lines]))
+                    #     elif self.activation_derivative_derivative_relaxation.type is ActivationRelaxationType.SINGLE_LINE:
+                    #         m_combination_lb, b_combination_lb = lb_lines
+                    #         m_combination_ub, b_combination_ub = ub_lines
+                    #     else:
+                    #         raise NotImplementedError
+
+                    #     # CROWN line definition
+                    #     if m_combination_lb != 0:
+                    #         b_combination_lb /= m_combination_lb
                         
-                        # norm_point next computations
-                        norm_grad = d_xi_d_z_k @ norm_grad
-                        norm_d_xi_xi_d_z_k_1 = d_xi_xi_d_z_k
+                    #     if m_combination_ub != 0:
+                    #         b_combination_ub /= m_combination_ub
 
-                        # 3. if LP bounds are passed, they must be tighter than the partial-CROWN ones
-                        if LP_bounds is not None:
-                            LP_lower_bounds_layer = LP_bounds[0][n_layer // 2 + 1]
-                            LP_upper_bounds_layer = LP_bounds[1][n_layer // 2 + 1]
+                    #     layer_output_lines_[j, :] = torch.tensor([
+                    #         m_combination_lb,
+                    #         b_combination_lb,
+                    #         m_combination_ub,
+                    #         b_combination_ub
+                    #     ])
 
-                            assert all(LP_lower_bounds_layer >= layer_output_lower_bounds - 1e-2)
-                            assert all(LP_upper_bounds_layer <= layer_output_upper_bounds + 1e-2)
-                    except:
-                        import pdb
-                        pdb.set_trace()
-            else:
-                # it's the last layer, there's no activations, just the linear part; exactly the same as in first partial derivative
-                if backprop_mode == BackpropMode.BLOCK_BACKPROP:
-                    new_u_dxixi_crown_coeffs_ubs = W_pos @ u_dxixi_crown_coeffs_ubs + W_neg @ u_dxixi_crown_coeffs_lbs
-                    new_u_dxixi_crown_consts_ubs = W_pos @ u_dxixi_crown_consts_ubs + W_neg @ u_dxixi_crown_consts_lbs
+                    #     layer_actual_bounds_[j, :] = torch.tensor(
+                    #         self.activation_derivative_derivative_relaxation.get_lb_ub_in_interval(y_k_lbs[0][j], y_k_ubs[0][j])
+                    #     )
+                    
+                    # layers_activation_second_derivative_output_lines.append(layer_output_lines_)
+                    # layers_activation_second_derivative_actual_bounds.append(layer_actual_bounds_)
 
-                    layer_output_upper_bounds = torch.sum(new_u_dxixi_crown_coeffs_ubs.clamp(min=0) * self.x_ub + new_u_dxixi_crown_coeffs_ubs.clamp(max=0) * self.x_lb, dim=1) + new_u_dxixi_crown_consts_ubs
+                    if backprop_mode == BackpropMode.BLOCK_BACKPROP:
+                        raise NotImplementedError('block backprop not adapted to batch computation method')
 
-                    new_u_dxixi_crown_coeffs_lbs = W_pos @ u_dxixi_crown_coeffs_lbs + W_neg @ u_dxixi_crown_coeffs_ubs
-                    new_u_dxixi_crown_consts_lbs = W_pos @ u_dxixi_crown_consts_lbs + W_neg @ u_dxixi_crown_consts_ubs
+                        # define E, e, and H, h as per the paper notation
+                        E_k_U = W_pos @ C_k_U + W_neg @ C_k_L
+                        e_k_U = W_pos @ c_k_U + W_neg @ c_k_L
+                        E_k_L = W_pos @ C_k_L + W_neg @ C_k_U
+                        e_k_L = W_pos @ c_k_L + W_neg @ c_k_U
 
-                    layer_output_lower_bounds = torch.sum(new_u_dxixi_crown_coeffs_lbs.clamp(min=0) * self.x_lb + new_u_dxixi_crown_coeffs_lbs.clamp(max=0) * self.x_ub, dim=1) + new_u_dxixi_crown_consts_lbs
-                elif backprop_mode == BackpropMode.COMPONENT_BACKPROP:
-                    layer_output_upper_bounds, layer_output_lower_bounds, CROWN_coefficients = self.backward_component_propagation(
-                        self.u_theta.fc_layers[:n_layer+1],
-                        layers_activation_second_derivative_output_lines,
-                        layers_activation_second_derivative_actual_bounds,
-                        self.upper_bounds,
-                        self.lower_bounds,
-                        self.x_lb,
-                        self.x_ub,
-                        is_final=True
-                    )
+                        lambda_k_L, mu_k_L, lambda_k_U, mu_k_U = layer_output_lines.T
+                        lambda_k_L, mu_k_L = lambda_k_L.unsqueeze(1), mu_k_L.unsqueeze(1)
+                        lambda_k_U, mu_k_U = lambda_k_U.unsqueeze(1), mu_k_U.unsqueeze(1)
 
-                    new_u_dxixi_crown_coeffs_ubs, new_u_dxixi_crown_consts_ubs = CROWN_coefficients[0], CROWN_coefficients[1]
-                    new_u_dxixi_crown_coeffs_lbs, new_u_dxixi_crown_consts_lbs = CROWN_coefficients[2], CROWN_coefficients[3]
+                        H_k_U = lambda_k_U.clamp(min=0) * A_k_U + lambda_k_U.clamp(max=0) * A_k_L
+                        h_k_U = lambda_k_U.clamp(min=0) * a_k_U.unsqueeze(1) + lambda_k_U.clamp(max=0) * a_k_L.unsqueeze(1) + lambda_k_U * mu_k_U
+                        H_k_L = lambda_k_L.clamp(min=0) * A_k_L + lambda_k_L.clamp(max=0) * A_k_U
+                        h_k_L = lambda_k_L.clamp(min=0) * a_k_L.unsqueeze(1) + lambda_k_L.clamp(max=0) * a_k_U.unsqueeze(1) + lambda_k_L * mu_k_L
+
+                        # compute \theta_j^{(k),U} and \theta_j^{(k),L} using E_k_U_j, e_k_U_j, E_k_L_j, e_k_L_j to use in following McCormick relaxation
+                        theta_k_U = torch.sum(E_k_U.clamp(min=0) * self.x_ub + E_k_U.clamp(max=0) * self.x_lb, dim=1) + e_k_U
+                        theta_k_L = torch.sum(E_k_L.clamp(min=0) * self.x_lb + E_k_L.clamp(max=0) * self.x_ub, dim=1) + e_k_L
+                        theta_k_L, theta_k_U = theta_k_L.unsqueeze(1), theta_k_U.unsqueeze(1)
+
+                        # define \nu's for McCormick relaxation of first, element-wise multiplication
+                        # TODO: make rho_k_j and tau_k_j depend on actual bounds somehow
+                        iota_k_L, iota_k_U = layer_actual_bounds.T
+                        iota_k_L, iota_k_U = iota_k_L.unsqueeze(1), iota_k_U.unsqueeze(1)
+                        nu_k_U_0 = rho_k * iota_k_U + (1 - rho_k) * iota_k_L
+                        nu_k_U_1 = rho_k * theta_k_L + (1 - rho_k) * theta_k_U
+                        nu_k_U_2 = -rho_k * iota_k_U * theta_k_L - (1 - rho_k) * iota_k_L * theta_k_U
+
+                        nu_k_L_0 = tau_k * iota_k_L + (1 - tau_k) * iota_k_U
+                        nu_k_L_1 = tau_k * theta_k_L + (1 - tau_k) * theta_k_U
+                        nu_k_L_2 = -tau_k * iota_k_L * theta_k_L - (1 - tau_k) * iota_k_U * theta_k_U
+
+                        # define \upsilon's for the linear layer that comes after that
+                        upsilon_k_U_0 = nu_k_U_0 * W_pos + nu_k_L_0 * W_neg
+                        upsilon_k_U_1 = nu_k_U_1 * W_pos + nu_k_L_1 * W_neg
+                        upsilon_k_U_2 = nu_k_U_2 * W_pos + nu_k_L_2 * W_neg
+                        upsilon_k_U_0_pos, upsilon_k_U_0_neg = upsilon_k_U_0.clamp(min=0), upsilon_k_U_0.clamp(max=0)
+                        upsilon_k_U_1_pos, upsilon_k_U_1_neg = upsilon_k_U_1.clamp(min=0), upsilon_k_U_1.clamp(max=0)
+
+                        upsilon_k_L_0 = nu_k_L_0 * W_pos + nu_k_U_0 * W_neg
+                        upsilon_k_L_1 = nu_k_L_1 * W_pos + nu_k_U_1 * W_neg
+                        upsilon_k_L_2 = nu_k_L_2 * W_pos + nu_k_U_2 * W_neg
+                        upsilon_k_L_0_pos, upsilon_k_L_0_neg = upsilon_k_L_0.clamp(min=0), upsilon_k_L_0.clamp(max=0)
+                        upsilon_k_L_1_pos, upsilon_k_L_1_neg = upsilon_k_L_1.clamp(min=0), upsilon_k_L_1.clamp(max=0)
+
+                        # define M and m from the upsilon values
+                        M_k_U = upsilon_k_U_0_pos.unsqueeze(2) * E_k_U.unsqueeze(1).repeat(1, weight.shape[1], 1) +\
+                            upsilon_k_U_0_neg.unsqueeze(2) * E_k_L.unsqueeze(1).repeat(1, weight.shape[1], 1) +\
+                            upsilon_k_U_1_pos.unsqueeze(2) * H_k_U.unsqueeze(1).repeat(1, weight.shape[1], 1) +\
+                            upsilon_k_U_1_neg.unsqueeze(2) * H_k_L.unsqueeze(1).repeat(1, weight.shape[1], 1)
+                        m_k_U = upsilon_k_U_0_pos * e_k_U.unsqueeze(1).repeat(1, weight.shape[1]) +\
+                            upsilon_k_U_0_neg * e_k_L.unsqueeze(1).repeat(1, weight.shape[1]) +\
+                            upsilon_k_U_1_pos * h_k_U.repeat(1, weight.shape[1]) +\
+                            upsilon_k_U_1_neg * h_k_L.repeat(1, weight.shape[1]) +\
+                            upsilon_k_U_2
+                        
+                        M_k_L = upsilon_k_L_0_pos.unsqueeze(2) * E_k_L.unsqueeze(1).repeat(1, weight.shape[1], 1) +\
+                            upsilon_k_L_0_neg.unsqueeze(2) * E_k_U.unsqueeze(1).repeat(1, weight.shape[1], 1) +\
+                            upsilon_k_L_1_pos.unsqueeze(2) * H_k_L.unsqueeze(1).repeat(1, weight.shape[1], 1) +\
+                            upsilon_k_L_1_neg.unsqueeze(2) * H_k_U.unsqueeze(1).repeat(1, weight.shape[1], 1)
+                        m_k_L = upsilon_k_L_0_pos * e_k_L.unsqueeze(1).repeat(1, weight.shape[1]) +\
+                            upsilon_k_L_0_neg * e_k_U.unsqueeze(1).repeat(1, weight.shape[1]) +\
+                            upsilon_k_L_1_pos * h_k_L.repeat(1, weight.shape[1]) +\
+                            upsilon_k_L_1_neg * h_k_U.repeat(1, weight.shape[1]) +\
+                            upsilon_k_L_2
+                        
+                        partial_dxiz_k_1_z_k_ubs = torch.sum(M_k_U * ((M_k_U >= 0) * self.x_ub + (M_k_U < 0) * self.x_lb), dim=2) + m_k_U
+                        partial_dxiz_k_1_z_k_lbs = torch.sum(M_k_L * ((M_k_L >= 0) * self.x_lb + (M_k_L < 0) * self.x_ub), dim=2) + m_k_L
+
+                        # define all alphas and betas starting with _0, _1, _2, _3 and _4
+                        # TODO: eta_k_j_n and zeta_k_j_n depend on actual bounds somehow
+                        alpha_k_0 = eta_k * partial_dxiz_k_1_z_k_ubs + (1 - eta_k) * partial_dxiz_k_1_z_k_lbs
+                        alpha_k_1 = eta_k * partial_dxi_z_k_1_lbs + (1 - eta_k) * partial_dxi_z_k_1_ubs
+                        alpha_k_2 = gamma_k * partial_dz_k_1_z_k_ubs + (1 - gamma_k) * partial_dz_k_1_z_k_lbs
+                        alpha_k_3 = gamma_k * u_dxixi_lbs + (1 - gamma_k) * u_dxixi_ubs
+                        alpha_k_4 = - eta_k * partial_dxiz_k_1_z_k_ubs * partial_dxi_z_k_1_lbs - (1 - eta_k) * partial_dxiz_k_1_z_k_lbs * partial_dxi_z_k_1_ubs + - gamma_k * partial_dz_k_1_z_k_ubs * u_dxixi_lbs - (1 - gamma_k) * partial_dz_k_1_z_k_lbs * u_dxixi_ubs
+
+                        alpha_k_0_pos, alpha_k_0_neg = alpha_k_0.clamp(min=0), alpha_k_0.clamp(max=0)
+                        alpha_k_1_pos, alpha_k_1_neg = alpha_k_1.clamp(min=0), alpha_k_1.clamp(max=0)
+                        alpha_k_2_pos, alpha_k_2_neg = alpha_k_2.clamp(min=0), alpha_k_2.clamp(max=0)
+                        alpha_k_3_pos, alpha_k_3_neg = alpha_k_3.clamp(min=0), alpha_k_3.clamp(max=0)
+
+                        beta_k_0 = zeta_k * partial_dxiz_k_1_z_k_lbs + (1 - zeta_k) * partial_dxiz_k_1_z_k_ubs
+                        beta_k_1 = zeta_k * partial_dxi_z_k_1_lbs + (1 - zeta_k) * partial_dxi_z_k_1_ubs
+                        beta_k_2 = delta_k * partial_dz_k_1_z_k_lbs + (1 - delta_k) * partial_dz_k_1_z_k_ubs
+                        beta_k_3 = delta_k * u_dxixi_lbs + (1 - delta_k) * u_dxixi_ubs
+                        beta_k_4 = - zeta_k * partial_dxiz_k_1_z_k_lbs * partial_dxi_z_k_1_lbs - (1 - zeta_k) * partial_dxiz_k_1_z_k_ubs * partial_dxi_z_k_1_ubs +\
+                            - delta_k * partial_dz_k_1_z_k_lbs * u_dxixi_lbs - (1 - delta_k) * partial_dz_k_1_z_k_ubs * u_dxixi_ubs
+
+                        beta_k_0_pos, beta_k_0_neg = beta_k_0.clamp(min=0), beta_k_0.clamp(max=0)
+                        beta_k_1_pos, beta_k_1_neg = beta_k_1.clamp(min=0), beta_k_1.clamp(max=0)
+                        beta_k_2_pos, beta_k_2_neg = beta_k_2.clamp(min=0), beta_k_2.clamp(max=0)
+                        beta_k_3_pos, beta_k_3_neg = beta_k_3.clamp(min=0), beta_k_3.clamp(max=0)
+
+                        # define the alpha_5, alpha_6, beta_5, and beta_6 from Equation 19
+                        alpha_k_5 = alpha_k_0_pos.unsqueeze(2) * C_k_U.unsqueeze(0).repeat(weight.shape[0], 1, 1) + alpha_k_0_neg.unsqueeze(2) * C_k_L.unsqueeze(0).repeat(weight.shape[0], 1, 1) +\
+                            alpha_k_1_pos.unsqueeze(0).repeat(weight.shape[0], 1).unsqueeze(2) * M_k_U + alpha_k_1_neg.unsqueeze(0).repeat(weight.shape[0], 1).unsqueeze(2) * M_k_L +\
+                            alpha_k_3_pos.unsqueeze(0).repeat(weight.shape[0], 1).unsqueeze(2) * D_k_U + alpha_k_3_neg.unsqueeze(0).repeat(weight.shape[0], 1).unsqueeze(2) * D_k_L
+                        alpha_k_6 = alpha_k_0_pos * c_k_U.unsqueeze(0).repeat(weight.shape[0], 1) + alpha_k_0_neg * c_k_L.unsqueeze(0).repeat(weight.shape[0], 1) +\
+                            alpha_k_1_pos.unsqueeze(0).repeat(weight.shape[0], 1) * m_k_U + alpha_k_1_neg.unsqueeze(0).repeat(weight.shape[0], 1) * m_k_L +\
+                            alpha_k_3_pos.unsqueeze(0).repeat(weight.shape[0], 1) * d_k_U + alpha_k_3_neg.unsqueeze(0).repeat(weight.shape[0], 1) * d_k_L +\
+                            alpha_k_4
+                        
+                        beta_k_5 = beta_k_0_pos.unsqueeze(2) * C_k_L.unsqueeze(0).repeat(weight.shape[0], 1, 1) + beta_k_0_neg.unsqueeze(2) * C_k_U.unsqueeze(0).repeat(weight.shape[0], 1, 1) +\
+                            beta_k_1_pos.unsqueeze(0).repeat(weight.shape[0], 1).unsqueeze(2) * M_k_L + beta_k_1_neg.unsqueeze(0).repeat(weight.shape[0], 1).unsqueeze(2) * M_k_U +\
+                            beta_k_3_pos.unsqueeze(0).repeat(weight.shape[0], 1).unsqueeze(2) * D_k_L + beta_k_3_neg.unsqueeze(0).repeat(weight.shape[0], 1).unsqueeze(2) * D_k_U
+                        beta_k_6 = beta_k_0_pos * c_k_L.unsqueeze(0).repeat(weight.shape[0], 1) + beta_k_0_neg * c_k_U.unsqueeze(0).repeat(weight.shape[0], 1) +\
+                            beta_k_1_pos.unsqueeze(0).repeat(weight.shape[0], 1) * m_k_L + beta_k_1_neg.unsqueeze(0).repeat(weight.shape[0], 1) * m_k_U +\
+                            beta_k_3_pos.unsqueeze(0).repeat(weight.shape[0], 1) * d_k_L + beta_k_3_neg.unsqueeze(0).repeat(weight.shape[0], 1) * d_k_U +\
+                            beta_k_4
+                        
+                        # replacing \partial_{x_ix_i} z_n^{(k-1)} in Eq. 19 using the linear bounds from the previous layer
+                        alpha_k_7 = alpha_k_2_pos.unsqueeze(2) * u_dxixi_crown_coeffs_ubs.unsqueeze(0).repeat(weight.shape[0], 1, 1) + alpha_k_2_neg.unsqueeze(2) * u_dxixi_crown_coeffs_lbs.unsqueeze(0).repeat(weight.shape[0], 1, 1) + alpha_k_5
+                        alpha_k_8 = alpha_k_2_pos * u_dxixi_crown_consts_ubs.unsqueeze(0).repeat(weight.shape[0], 1) + alpha_k_2_neg * u_dxixi_crown_consts_lbs.unsqueeze(0).repeat(weight.shape[0], 1) + alpha_k_6
+                        sum_alpha_k_7 = alpha_k_7.sum(dim=1)
+                        sum_alpha_k_8 = alpha_k_8.sum(dim=1)
+                        new_u_dxixi_crown_coeffs_ubs, new_u_dxixi_crown_consts_ubs = sum_alpha_k_7, sum_alpha_k_8
+
+                        beta_k_7 = beta_k_2_pos.unsqueeze(2) * u_dxixi_crown_coeffs_lbs.unsqueeze(0).repeat(weight.shape[0], 1, 1) + beta_k_2_neg.unsqueeze(2) * u_dxixi_crown_coeffs_ubs.unsqueeze(0).repeat(weight.shape[0], 1, 1) + beta_k_5
+                        beta_k_8 = beta_k_2_pos * u_dxixi_crown_consts_lbs.unsqueeze(0).repeat(weight.shape[0], 1) + beta_k_2_neg * u_dxixi_crown_consts_ubs.unsqueeze(0).repeat(weight.shape[0], 1) + beta_k_6
+                        sum_beta_k_7 = beta_k_7.sum(dim=1)
+                        sum_beta_k_8 = beta_k_8.sum(dim=1)
+                        new_u_dxixi_crown_coeffs_lbs, new_u_dxixi_crown_consts_lbs = sum_beta_k_7, sum_beta_k_8
+
+                        layer_output_upper_bounds = torch.sum(new_u_dxixi_crown_coeffs_ubs * ((new_u_dxixi_crown_coeffs_ubs >= 0) * self.x_ub + (new_u_dxixi_crown_coeffs_ubs < 0) * self.x_lb), dim=1) + new_u_dxixi_crown_consts_ubs
+                        layer_output_lower_bounds = torch.sum(new_u_dxixi_crown_coeffs_lbs * ((new_u_dxixi_crown_coeffs_lbs >= 0) * self.x_lb + (new_u_dxixi_crown_coeffs_lbs < 0) * self.x_ub), dim=1) + new_u_dxixi_crown_consts_lbs
+                    elif backprop_mode == BackpropMode.COMPONENT_BACKPROP:
+                        layer_output_upper_bounds, layer_output_lower_bounds, CROWN_coefficients = self.backward_component_propagation(
+                            self.u_theta.fc_layers[:n_layer+1],
+                            layers_activation_second_derivative_output_lines,
+                            layers_activation_second_derivative_actual_bounds,
+                            self.upper_bounds,
+                            self.lower_bounds,
+                            self.x_lb,
+                            self.x_ub,
+                            is_final=False
+                        )
+
+                        new_u_dxixi_crown_coeffs_ubs, new_u_dxixi_crown_consts_ubs = CROWN_coefficients[0], CROWN_coefficients[1]
+                        new_u_dxixi_crown_coeffs_lbs, new_u_dxixi_crown_consts_lbs = CROWN_coefficients[2], CROWN_coefficients[3]
+                    else:
+                        raise NotImplementedError
+
+                    if debug:
+                        try:
+                            # 1. all lower bounds should be smaller than upper bounds
+                            assert all(layer_output_lower_bounds <= layer_output_upper_bounds)
+
+                            # 2. a random point in the interval needs to be inside the bounds
+                            d_xi_z_k_1_d_z_k = torch.diag(self.activation_derivative_derivative_relaxation.evaluate(norm_point) * (weight @ norm_grad).flatten()) @ weight
+                            d_xi_d_z_k = torch.diag(self.u_dxi_theta.activation_derivative_relaxation.evaluate(norm_point)) @ weight
+
+                            d_xi_xi_d_z_k = d_xi_z_k_1_d_z_k @ norm_grad + d_xi_d_z_k @ norm_d_xi_xi_d_z_k_1
+
+                            # all the partial derivative components must be fine
+                            assert all(d_xi_xi_d_z_k.flatten() <= layer_output_upper_bounds + 1e-4)
+                            assert all(d_xi_xi_d_z_k.flatten() >= layer_output_lower_bounds - 1e-4)
+                            
+                            # norm_point next computations
+                            norm_grad = d_xi_d_z_k @ norm_grad
+                            norm_d_xi_xi_d_z_k_1 = d_xi_xi_d_z_k
+
+                            # 3. if LP bounds are passed, they must be tighter than the partial-CROWN ones
+                            if LP_bounds is not None:
+                                LP_lower_bounds_layer = LP_bounds[0][n_layer // 2 + 1]
+                                LP_upper_bounds_layer = LP_bounds[1][n_layer // 2 + 1]
+
+                                assert all(LP_lower_bounds_layer >= layer_output_lower_bounds - 1e-2)
+                                assert all(LP_upper_bounds_layer <= layer_output_upper_bounds + 1e-2)
+                        except:
+                            import pdb
+                            pdb.set_trace()
                 else:
-                    raise NotImplementedError
-                
-                if debug:
-                    try:
-                        # 1. all lower bounds should be smaller than upper bounds
-                        assert all((layer_output_lower_bounds <= layer_output_upper_bounds).flatten())
+                    # it's the last layer, there's no activations, just the linear part; exactly the same as in first partial derivative
+                    if backprop_mode == BackpropMode.BLOCK_BACKPROP:
+                        new_u_dxixi_crown_coeffs_ubs = W_pos @ u_dxixi_crown_coeffs_ubs + W_neg @ u_dxixi_crown_coeffs_lbs
+                        new_u_dxixi_crown_consts_ubs = W_pos @ u_dxixi_crown_consts_ubs + W_neg @ u_dxixi_crown_consts_lbs
 
-                        # 2. a random point in the interval needs to be inside the bounds
-                        norm_d_xi_xi_d_z_k_1 = weight @ norm_d_xi_xi_d_z_k_1
-                        assert all(norm_d_xi_xi_d_z_k_1.flatten() <= layer_output_upper_bounds)
-                        assert all(norm_d_xi_xi_d_z_k_1.flatten() >= layer_output_lower_bounds)
+                        layer_output_upper_bounds = torch.sum(new_u_dxixi_crown_coeffs_ubs.clamp(min=0) * self.x_ub + new_u_dxixi_crown_coeffs_ubs.clamp(max=0) * self.x_lb, dim=1) + new_u_dxixi_crown_consts_ubs
 
-                        # 3. the CROWN bounds must be looser than the LP ones
-                        if LP_bounds:
-                            assert all(layer_output_upper_bounds >= LP_bounds[1][n_layer // 2 + 1] - 1e-3)
-                            assert all(layer_output_lower_bounds <= LP_bounds[0][n_layer // 2 + 1] + 1e-2)
-                    except:
-                        print('--- exception ---')
-                        import pdb
-                        pdb.set_trace()
+                        new_u_dxixi_crown_coeffs_lbs = W_pos @ u_dxixi_crown_coeffs_lbs + W_neg @ u_dxixi_crown_coeffs_ubs
+                        new_u_dxixi_crown_consts_lbs = W_pos @ u_dxixi_crown_consts_lbs + W_neg @ u_dxixi_crown_consts_ubs
 
-            u_dxixi_upper_bounds.append(layer_output_upper_bounds)
-            u_dxixi_lower_bounds.append(layer_output_lower_bounds)
+                        layer_output_lower_bounds = torch.sum(new_u_dxixi_crown_coeffs_lbs.clamp(min=0) * self.x_lb + new_u_dxixi_crown_coeffs_lbs.clamp(max=0) * self.x_ub, dim=1) + new_u_dxixi_crown_consts_lbs
+                    elif backprop_mode == BackpropMode.COMPONENT_BACKPROP:
+                        layer_output_upper_bounds, layer_output_lower_bounds, CROWN_coefficients = self.backward_component_propagation(
+                            self.u_theta.fc_layers[:n_layer+1],
+                            layers_activation_second_derivative_output_lines,
+                            layers_activation_second_derivative_actual_bounds,
+                            self.upper_bounds,
+                            self.lower_bounds,
+                            self.x_lb,
+                            self.x_ub,
+                            is_final=True
+                        )
 
-            self.u_dxixi_crown_coefficients_ubs.append(new_u_dxixi_crown_coeffs_ubs)
-            self.u_dxixi_crown_constants_ubs.append(new_u_dxixi_crown_consts_ubs)
-            self.u_dxixi_crown_coefficients_lbs.append(new_u_dxixi_crown_coeffs_lbs)
-            self.u_dxixi_crown_constants_lbs.append(new_u_dxixi_crown_consts_lbs)
+                        new_u_dxixi_crown_coeffs_ubs, new_u_dxixi_crown_consts_ubs = CROWN_coefficients[0], CROWN_coefficients[1]
+                        new_u_dxixi_crown_coeffs_lbs, new_u_dxixi_crown_consts_lbs = CROWN_coefficients[2], CROWN_coefficients[3]
+                    else:
+                        raise NotImplementedError
+                    
+                    if debug:
+                        try:
+                            # 1. all lower bounds should be smaller than upper bounds
+                            assert all((layer_output_lower_bounds <= layer_output_upper_bounds).flatten())
+
+                            # 2. a random point in the interval needs to be inside the bounds
+                            norm_d_xi_xi_d_z_k_1 = weight @ norm_d_xi_xi_d_z_k_1
+                            assert all(norm_d_xi_xi_d_z_k_1.flatten() <= layer_output_upper_bounds)
+                            assert all(norm_d_xi_xi_d_z_k_1.flatten() >= layer_output_lower_bounds)
+
+                            # 3. the CROWN bounds must be looser than the LP ones
+                            if LP_bounds:
+                                assert all(layer_output_upper_bounds >= LP_bounds[1][n_layer // 2 + 1] - 1e-3)
+                                assert all(layer_output_lower_bounds <= LP_bounds[0][n_layer // 2 + 1] + 1e-2)
+                        except:
+                            print('--- exception ---')
+                            import pdb
+                            pdb.set_trace()
+
+                u_dxixi_upper_bounds.append(layer_output_upper_bounds)
+                u_dxixi_lower_bounds.append(layer_output_lower_bounds)
+
+                self.u_dxixi_crown_coefficients_ubs.append(new_u_dxixi_crown_coeffs_ubs)
+                self.u_dxixi_crown_constants_ubs.append(new_u_dxixi_crown_consts_ubs)
+                self.u_dxixi_crown_coefficients_lbs.append(new_u_dxixi_crown_coeffs_lbs)
+                self.u_dxixi_crown_constants_lbs.append(new_u_dxixi_crown_consts_lbs)
 
         self.computed_bounds = True
         self.computation_times['activation_relaxations'] = activation_relaxation_time
+        self.computation_times['total_computation_time'] = (time.time() - total_computation_time)

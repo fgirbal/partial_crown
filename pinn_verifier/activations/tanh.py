@@ -9,6 +9,7 @@ from .activation_relaxations import ActivationRelaxation, ActivationRelaxationTy
 
 tanh = torch.nn.Tanh()
 
+relaxation_tolerance = 1e-7
 # brenth_xtol = 2e-12
 # brenth_rtol = 8.881784197001252e-16
 brenth_xtol = 1e-8
@@ -40,7 +41,7 @@ def get_lb_line_lb_in_convex_ub_in_concave(lb: torch.tensor, ub: torch.tensor, s
             lb_line_m = np_fn_derivative(d_1)
             lb_line_b = np_fn(d_1) - lb_line_m * d_1
 
-    return (torch.tensor(lb_line_m), torch.tensor(lb_line_b))
+    return [torch.tensor(lb_line_m), torch.tensor(lb_line_b)]
 
 def get_ub_line_lb_in_convex_ub_in_concave(lb: torch.tensor, ub: torch.tensor, split_point: float, np_fn: callable, np_fn_derivative: callable) -> Tuple[line_type, line_type]:
     def fn_derivative_bound_d(x, bound):
@@ -63,7 +64,7 @@ def get_ub_line_lb_in_convex_ub_in_concave(lb: torch.tensor, ub: torch.tensor, s
         ub_line_m = min((np_fn(ub) - np_fn(lb)) / (ub - lb), np_fn_derivative(ub))
         ub_line_b = np_fn(ub) - ub_line_m * ub
     
-    return (torch.tensor(ub_line_m), torch.tensor(ub_line_b))
+    return [torch.tensor(ub_line_m), torch.tensor(ub_line_b)]
 
 def get_lines_lb_in_convex_ub_in_concave(lb: torch.tensor, ub: torch.tensor, split_point: float, np_fn: callable, np_fn_derivative: callable) -> Tuple[line_type, line_type]:
     return (
@@ -98,7 +99,7 @@ def get_lb_line_lb_in_concave_ub_in_convex(lb: torch.tensor, ub: torch.tensor, s
             lb_line_m = np_fn_derivative(d_1)
             lb_line_b = np_fn(d_1) - lb_line_m * d_1
     
-    return (torch.tensor(lb_line_m), torch.tensor(lb_line_b))
+    return [torch.tensor(lb_line_m), torch.tensor(lb_line_b)]
 
 def get_ub_line_lb_in_concave_ub_in_convex(lb: torch.tensor, ub: torch.tensor, split_point: float, np_fn: callable, np_fn_derivative: callable) -> Tuple[line_type, line_type]:
     def fn_derivative_bound_d(x, bound):
@@ -126,7 +127,7 @@ def get_ub_line_lb_in_concave_ub_in_convex(lb: torch.tensor, ub: torch.tensor, s
     # except:
     #     d_lb = split_point - 1
     
-    return (torch.tensor(ub_line_m), torch.tensor(ub_line_b))
+    return [torch.tensor(ub_line_m), torch.tensor(ub_line_b)]
 
 
 def get_lines_lb_in_concave_ub_in_convex(lb: torch.tensor, ub: torch.tensor, split_point: float, np_fn: callable, np_fn_derivative: callable) -> Tuple[line_type, line_type]:
@@ -213,8 +214,8 @@ class TanhRelaxation(ActivationRelaxation):
                 ub_line[0] = (tanh(ub) - tanh(lb)) / (ub - lb)
                 ub_line[1] = tanh(ub) - ub_line[0] * ub
 
-        lb_line[1] -= 1e-5
-        ub_line[1] += 1e-5
+        lb_line[1] -= relaxation_tolerance
+        ub_line[1] += relaxation_tolerance
 
         return lb_line, ub_line
     
@@ -270,27 +271,41 @@ class TanhDerivativeRelaxation(ActivationRelaxation):
         
             # tangent line at point d_1
             d_1 = self.single_line_lb_line_bias * ub + (1 - self.single_line_lb_line_bias) * lb
+            if d_1 == 0:
+                d_1 = (self.single_line_ub_line_bias + 1e-5) * ub + (1 - self.single_line_ub_line_bias + 1e-5) * lb
+            
             lb_m = self.tanh_second_derivative(d_1)
             lb_b = self.evaluate(d_1) - lb_m * d_1
-            lb_lines.append((lb_m, lb_b))
+            lb_lines.append([lb_m, lb_b])
 
             # ub line just connects upper and lower bound points
             ub_m = (self.evaluate(ub) - self.evaluate(lb)) / (ub - lb)
+            if lb_m == 0:
+                # loosen the bound a bit
+                lb_m = (self.evaluate(ub + 1e-5) - self.evaluate(lb)) / (ub + 1e-5 - lb)
+    
             ub_b = self.evaluate(ub) - ub_m * ub
-            ub_lines.append((ub_m, ub_b))
+            ub_lines.append([ub_m, ub_b])
         elif self.in_region(lb, self.concave_region) and self.in_region(ub, self.concave_region):
             # in this location, the function is concave, use the inverted bounds from softplus case
 
             # lb line just connects upper and lower bound points
             lb_m = (self.evaluate(ub) - self.evaluate(lb)) / (ub - lb)
+            if lb_m == 0:
+                # loosen the bound a bit
+                lb_m = (self.evaluate(ub + 1e-5) - self.evaluate(lb)) / (ub + 1e-5 - lb)
+
             lb_b = self.evaluate(ub) - lb_m * ub
-            lb_lines.append((lb_m, lb_b))
+            lb_lines.append([lb_m, lb_b])
 
             # tangent line at point d_1
             d_1 = self.single_line_ub_line_bias * ub + (1 - self.single_line_ub_line_bias) * lb
+            if d_1 == 0:
+                d_1 = (self.single_line_ub_line_bias + 1e-5) * ub + (1 - self.single_line_ub_line_bias + 1e-5) * lb
+            
             ub_m = self.tanh_second_derivative(d_1)
             ub_b = self.evaluate(d_1) - ub_m * d_1
-            ub_lines.append((ub_m, ub_b))
+            ub_lines.append([ub_m, ub_b])
         else:
             # points are in different regions; 
             # are they in the first convex and the concave regions?
@@ -346,6 +361,9 @@ class TanhDerivativeRelaxation(ActivationRelaxation):
 
             ub_line.append(sum([bias*m for (m, _), bias in zip(ub_lines, biases)]))
             ub_line.append(sum([bias*b for (_, b), bias in zip(ub_lines, biases)]))
+
+        lb_line[1] -= relaxation_tolerance
+        ub_line[1] += relaxation_tolerance
 
         return lb_line, ub_line
     
@@ -427,25 +445,25 @@ class TanhSecondDerivativeRelaxation(ActivationRelaxation):
             d_1 = self.single_line_lb_line_bias * ub + (1 - self.single_line_lb_line_bias) * lb
             lb_m = self.np_tanh_third_derivative(d_1)
             lb_b = self.evaluate(d_1) - lb_m * d_1
-            lb_lines.append((lb_m, lb_b))
+            lb_lines.append([lb_m, lb_b])
 
             # ub line just connects upper and lower bound points
             ub_m = (self.evaluate(ub) - self.evaluate(lb)) / (ub - lb)
             ub_b = self.evaluate(ub) - ub_m * ub
-            ub_lines.append((ub_m, ub_b))
+            ub_lines.append([ub_m, ub_b])
         elif (self.in_region(lb, self.first_concave_region) and self.in_region(ub, self.first_concave_region)) or (self.in_region(lb, self.second_concave_region) and self.in_region(ub, self.second_concave_region)):
             # in this location, the function is concave, use the inverted bounds from softplus case
 
             # lb line just connects upper and lower bound points
             lb_m = (self.evaluate(ub) - self.evaluate(lb)) / (ub - lb)
             lb_b = self.evaluate(ub) - lb_m * ub
-            lb_lines.append((lb_m, lb_b))
+            lb_lines.append([lb_m, lb_b])
 
             # tangent line at point d_1
             d_1 = self.single_line_ub_line_bias * ub + (1 - self.single_line_ub_line_bias) * lb
             ub_m = self.np_tanh_third_derivative(d_1)
             ub_b = self.evaluate(d_1) - ub_m * d_1
-            ub_lines.append((ub_m, ub_b))
+            ub_lines.append([ub_m, ub_b])
         else:
             # points are in different regions; 
             # they are in adjoint regions (3 cases)
@@ -525,6 +543,9 @@ class TanhSecondDerivativeRelaxation(ActivationRelaxation):
             ub_line.append(sum([bias*m for (m, _), bias in zip(ub_lines, biases)]))
             ub_line.append(sum([bias*b for (_, b), bias in zip(ub_lines, biases)]))
         
+        lb_line[1] -= relaxation_tolerance
+        ub_line[1] += relaxation_tolerance
+
         return lb_line, ub_line
 
     def get_lb_ub_in_interval(self, lb: torch.tensor, ub: torch.tensor) -> Tuple[torch.tensor, torch.tensor]:

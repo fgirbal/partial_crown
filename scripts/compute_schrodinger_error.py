@@ -81,13 +81,13 @@ def model_get_residual(model, X_r):
 
 domain_bounds = torch.tensor([[0, -5], [np.pi/2, 5]])
 
-ts = torch.linspace(domain_bounds[0, 0], domain_bounds[1, 0], 250)
-xs = torch.linspace(domain_bounds[0, 1], domain_bounds[1, 1], 250)
+ts = torch.linspace(domain_bounds[0, 0], domain_bounds[1, 0], 100)
+xs = torch.linspace(domain_bounds[0, 1], domain_bounds[1, 1], 100)
 grid_ts, grid_xs = torch.meshgrid(ts, xs, indexing='ij')
 all_grid_points = torch.dstack([grid_ts, grid_xs]).reshape(-1, 2)
 
 f_us, f_vs = model_get_residual(model, all_grid_points)
-f_hs = torch.sqrt(f_us**2 + f_vs**2)
+f_hs = f_us**2 + f_vs**2
 f_u_min, f_u_max = f_us.min(), f_us.max()
 f_v_min, f_v_max = f_vs.min(), f_vs.max()
 f_h_min, f_h_max = f_hs.min(), f_hs.max()
@@ -102,7 +102,7 @@ print("f_h max:", f_h_max)
 
 h_thetas = model(all_grid_points)
 u_thetas, v_thetas = h_thetas[:, 0], h_thetas[:, 1]
-h_theta_norm = torch.sqrt(u_thetas**2 + v_thetas**2)
+h_theta_norm = u_thetas**2 + v_thetas**2
 
 all_min_u, all_max_u = u_thetas.min(), u_thetas.max()
 all_min_v, all_max_v = v_thetas.min(), v_thetas.max()
@@ -115,6 +115,9 @@ print("v_theta min:", all_min_v)
 print("v_theta max:", all_max_v)
 print("h_theta_norm min:", all_min_h)
 print("h_theta_norm max:", all_max_h)
+
+import pdb
+pdb.set_trace()
 
 # def compute_torch_gradient_dt(model, X_r):
 #     t, x = X_r[:, 0:1], X_r[:, 1:2]
@@ -189,7 +192,7 @@ fig.colorbar(fs_plot, ax=ax[1])
 # ax[1].scatter(grid_points[:, 0], grid_points[:, 1], s=1, c="red")
 ax[1].set_ylabel(r"$x$")
 ax[1].set_xlabel(r"$t$")
-ax[1].set_title(r"$|f_{\theta}|$")
+ax[1].set_title(r"$|f_{\theta}|^2$")
 
 plt.tight_layout()
 plt.show()

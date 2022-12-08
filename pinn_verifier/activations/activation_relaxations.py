@@ -18,6 +18,7 @@ class ActivationRelaxationType(Enum):
 class ActivationRelaxation():
     def __init__(self, type: ActivationRelaxationType) -> None:
         self.type = type
+        self.high_precision = True
     
     @staticmethod
     def add_linear_lb(grb_model: grb.Model, input_var: grb.Var, output_var: grb.Var, lb_line: line_type):
@@ -72,11 +73,25 @@ class ActivationRelaxation():
 
     def get_bounds(self, lb: torch.tensor, ub: torch.tensor) -> List[List[float]]:
         if lb == ub:
-            return None
+            # no need to know the underlying function, any single line will do
+            y_val = self.evaluate(lb)
+            lb_line = [1, y_val - lb - 1e-5]
+            ub_line = [1, y_val - ub + 1e-5]
+
+            if self.type == ActivationRelaxationType.SINGLE_LINE:
+                return lb_line, ub_line
+            elif self.type == ActivationRelaxationType.MULTI_LINE:
+                return [lb_line], [ub_line]
+            else:
+                raise NotImplementedError('other')
 
         assert ub > lb
         lb = lb.detach()
         ub = ub.detach()
+
+        if self.high_precision:
+            lb = lb.to(torch.float64)
+            ub = ub.to(torch.float64)
 
         if self.type == ActivationRelaxationType.SINGLE_LINE:
             return self.single_line_relaxation(lb, ub)
