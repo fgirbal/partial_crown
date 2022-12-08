@@ -1,3 +1,7 @@
 *.DS_Store
 *.pyc
 PINN_Verifier.egg-info
+*.json
+*.pdf
+*.png
+*.pb
