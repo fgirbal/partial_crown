@@ -8,7 +8,8 @@ from pinn_verifier.activations.activation_relaxations import ActivationRelaxatio
 from pinn_verifier.activations.tanh import TanhRelaxation, TanhDerivativeRelaxation, TanhSecondDerivativeRelaxation
 from pinn_verifier.utils import load_compliant_model
 from pinn_verifier.lp import LPPINNSolution
-from pinn_verifier.crown import CROWNPINNPartialDerivative, CROWNPINNSolution, CROWNPINNSecondPartialDerivative, CROWNBurgersVerifier
+from pinn_verifier.crown import CROWNPINNPartialDerivative, CROWNPINNSolution, CROWNPINNSecondPartialDerivative
+from pinn_verifier.burgers import CROWNBurgersVerifier
 from pinn_verifier.branching import greedy_input_branching, VerbosityLevel
 
 torch.manual_seed(43)
