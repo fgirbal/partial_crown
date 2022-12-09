@@ -1,3 +1,4 @@
+from os import device_encoding
 import time
 import copy
 from enum import Enum
@@ -33,7 +34,7 @@ class BackpropMode(Enum):
 
 
 class CROWNPINNSolution():
-    def __init__(self, model: List[torch.nn.Module], activation_relaxation: ActivationRelaxation) -> None:
+    def __init__(self, model: List[torch.nn.Module], activation_relaxation: ActivationRelaxation, device: torch.device = torch.device('cpu')) -> None:
         # class used to represent a CROWNPINNSolution
         # currently supported model is a fully connected network with a few normalization layers (Add and Mul only)
         if not self.is_model_supported(model):
@@ -41,9 +42,13 @@ class CROWNPINNSolution():
                 "model passed to CROWNPINNSolution is not supported in current implementation"
             )
         
+        self.device = device
+        
         self.input_dimension = 2
         self.layers = model
         self.norm_layers, self.fc_layers = self.separate_norm_and_fc_layers(model)
+
+        self.fc_layers = [layer.to(self.device) for layer in self.fc_layers]
 
         self._domain_bounds = None
         self.computed_bounds = False
@@ -176,8 +181,7 @@ class CROWNPINNSolution():
             self.lower_bounds.append(current_lb)
             self.upper_bounds.append(current_ub)
 
-    @staticmethod
-    def optimized_backward_crown_single_branch(Ws, bs, pre_act_UBs, pre_act_LBs, bound_lines):
+    def optimized_backward_crown_single_branch(self, Ws, bs, pre_act_UBs, pre_act_LBs, bound_lines):
         with torch.no_grad():
             nlayer = len(Ws)
 
@@ -242,8 +246,7 @@ class CROWNPINNSolution():
 
         return UB_final, LB_final, (f_U_A_0, f_U_constant, f_L_A_0, f_L_constant)
 
-    @staticmethod
-    def optimized_backward_crown_batch(Ws, bs, pre_act_UBs, pre_act_LBs, bound_lines):
+    def optimized_backward_crown_batch(self, Ws, bs, pre_act_UBs, pre_act_LBs, bound_lines):
         with torch.no_grad():
             nlayer = len(Ws)
 
@@ -251,18 +254,18 @@ class CROWNPINNSolution():
             output_dim = len(bs[-1])
 
             Delta = [None] * (nlayer + 1)
-            Delta[nlayer] = torch.zeros(batch_size, output_dim, output_dim)
-            Delta[0] = torch.zeros(batch_size, output_dim, output_dim)
+            Delta[nlayer] = torch.zeros(batch_size, output_dim, output_dim).to(self.device)
+            Delta[0] = torch.zeros(batch_size, output_dim, output_dim).to(self.device)
 
             Theta = [None] * (nlayer + 1)
-            Theta[nlayer] = torch.zeros(batch_size, output_dim, output_dim)
-            Theta[0] = torch.zeros(batch_size, output_dim, output_dim)
+            Theta[nlayer] = torch.zeros(batch_size, output_dim, output_dim).to(self.device)
+            Theta[0] = torch.zeros(batch_size, output_dim, output_dim).to(self.device)
 
             Lambda = [None] * (nlayer + 1)
-            Lambda[nlayer] = torch.eye(output_dim).repeat(batch_size, 1, 1)
+            Lambda[nlayer] = torch.eye(output_dim).repeat(batch_size, 1, 1).to(self.device)
 
             Omega = [None] * (nlayer + 1)
-            Omega[nlayer] = torch.eye(output_dim).repeat(batch_size, 1, 1)
+            Omega[nlayer] = torch.eye(output_dim).repeat(batch_size, 1, 1).to(self.device)
 
             for k in range(nlayer-1, -1, -1):
                 Lambda_W_multiply = (Lambda[k+1] @ Ws[k])
@@ -275,8 +278,8 @@ class CROWNPINNSolution():
                 beta_U = bound_lines_k[:,:,3].unsqueeze(1)
 
                 if k == 0:
-                    lambda_ = torch.ones(batch_size, output_dim, Ws[0].shape[1])
-                    omega = torch.ones(batch_size, output_dim, Ws[0].shape[1])
+                    lambda_ = torch.ones(batch_size, output_dim, Ws[0].shape[1]).to(self.device)
+                    omega = torch.ones(batch_size, output_dim, Ws[0].shape[1]).to(self.device)
                 else:
                     lambda_ = (Lambda_W_multiply >= 0) * alpha_U + (Lambda_W_multiply < 0) * alpha_L
                     omega = (Omega_W_multiply >= 0) * alpha_L + (Omega_W_multiply < 0) * alpha_U
@@ -326,6 +329,8 @@ class CROWNPINNSolution():
                 # a multiplication can change the direction of the bounds, sort them accordingly
                 domain_bounds = domain_bounds.sort(dim=1).values
 
+        domain_bounds = domain_bounds.to(self.device)
+
         current_lb = domain_bounds[:, 0]
         current_ub = domain_bounds[:, 1]
 
@@ -372,7 +377,7 @@ class CROWNPINNSolution():
             else:
                 # batch compute the activation relaxations
                 s = time.time()
-                layer_output_lines = torch.Tensor([self.activation_relaxation.get_bounds(lb, ub) for lb, ub in zip(pre_act_LBs[-1].flatten(), pre_act_UBs[-1].flatten())]).reshape(-1, 4)
+                layer_output_lines = torch.Tensor([self.activation_relaxation.get_bounds(lb, ub) for lb, ub in zip(pre_act_LBs[-1].flatten(), pre_act_UBs[-1].flatten())]).to(self.device).reshape(-1, 4)
                 non_zero_ub_m = torch.where(layer_output_lines[:, 0] != 0.0)[0]
                 non_zero_lb_m = torch.where(layer_output_lines[:, 2] != 0.0)[0]
                 layer_output_lines[non_zero_ub_m, 1] = (layer_output_lines[non_zero_ub_m, 1]) / (layer_output_lines[non_zero_ub_m, 0])
@@ -485,6 +490,7 @@ class CROWNPINNPartialDerivative():
     def __init__(self, pinn_solution: CROWNPINNSolution, component_idx: int, activation_derivative_relaxation: ActivationRelaxation) -> None:
         # class used to compute the bounds of the derivative of the PINN; it operates over the model defined in pinn.grb_model
         self.u_theta = pinn_solution
+        self.device = pinn_solution.device
 
         # the component should be one of the input dimensions
         input_shape = self.u_theta.fc_layers[0].weight.shape[1]
@@ -899,7 +905,7 @@ class CROWNPINNPartialDerivative():
                     raise NotImplementedError
             
             batch_size = self.u_theta.domain_bounds.shape[0]
-            norm_layer_partial_grad = norm_layer_partial_grad.repeat(batch_size, 1)
+            norm_layer_partial_grad = norm_layer_partial_grad.repeat(batch_size, 1).to(self.device)
             self.norm_layer_partial_grad = norm_layer_partial_grad
 
             u_dxi_lower_bounds = self.lower_bounds
@@ -912,9 +918,9 @@ class CROWNPINNPartialDerivative():
             xi_i_j = 0.5
             psi_i_j = 0.5
 
-            self.u_dxi_crown_coefficients_lbs = [torch.zeros(batch_size, u_dxi_lower_bounds[-1].shape[1], u_dxi_lower_bounds[-1].shape[1])]
+            self.u_dxi_crown_coefficients_lbs = [torch.zeros(batch_size, u_dxi_lower_bounds[-1].shape[1], u_dxi_lower_bounds[-1].shape[1]).to(self.device)]
             self.u_dxi_crown_constants_lbs = [u_dxi_lower_bounds[-1]]
-            self.u_dxi_crown_coefficients_ubs = [torch.zeros(batch_size, u_dxi_upper_bounds[-1].shape[1], u_dxi_upper_bounds[-1].shape[1])]
+            self.u_dxi_crown_coefficients_ubs = [torch.zeros(batch_size, u_dxi_upper_bounds[-1].shape[1], u_dxi_upper_bounds[-1].shape[1]).to(self.device)]
             self.u_dxi_crown_constants_ubs = [u_dxi_upper_bounds[-1]]
             self.partial_z_k_z_k_1_coefficients_lbs = []
             self.partial_z_k_z_k_1_constants_lbs = []
@@ -972,7 +978,7 @@ class CROWNPINNPartialDerivative():
                     pre_act_UBs = self.u_theta.upper_bounds[n_layer+1]
 
                     s = time.time()
-                    layer_output_lines = torch.Tensor([self.activation_derivative_relaxation.get_bounds(lb, ub) for lb, ub in zip(pre_act_LBs.flatten(), pre_act_UBs.flatten())]).reshape(-1, 4)
+                    layer_output_lines = torch.Tensor([self.activation_derivative_relaxation.get_bounds(lb, ub) for lb, ub in zip(pre_act_LBs.flatten().cpu(), pre_act_UBs.flatten().cpu())]).to(self.device).reshape(-1, 4)
                     
                     non_zero_lb_m = torch.where(layer_output_lines[:, 0] != 0.0)[0]
                     non_zero_ub_m = torch.where(layer_output_lines[:, 2] != 0.0)[0]
@@ -1201,6 +1207,7 @@ class CROWNPINNSecondPartialDerivative():
         # class used to compute the bounds of the second derivative of the PINN; it operates over the model defined in pinn_partial_derivative.u_theta.grb_model
         self.u_dxi_theta = pinn_partial_derivative
         self.u_theta = pinn_partial_derivative.u_theta
+        self.device = pinn_partial_derivative.device
 
         # the component should be one of the input dimensions
         input_shape = self.u_theta.fc_layers[0].weight.shape[1]
@@ -1491,13 +1498,13 @@ class CROWNPINNSecondPartialDerivative():
             # d_psi_0_dx_i is equal to 0 (second derivative of x with respect to x_i) and it'll remain the
             # same through the normalization layers
             # zero_vec = [0 for _ in range(u_theta.fc_layers[0].weight.shape[1])]
-            zero_vec = torch.zeros(self.x_lb.shape[0], u_theta.fc_layers[0].weight.shape[1])
+            zero_vec = torch.zeros(self.x_lb.shape[0], u_theta.fc_layers[0].weight.shape[1]).to(self.device)
             u_dxixi_lower_bounds.append(zero_vec)
             u_dxixi_upper_bounds.append(zero_vec)
 
-            self.u_dxixi_crown_coefficients_lbs = [torch.zeros_like(zero_vec)]
+            self.u_dxixi_crown_coefficients_lbs = [torch.zeros_like(zero_vec).to(self.device)]
             self.u_dxixi_crown_constants_lbs = [u_dxixi_lower_bounds[-1]]
-            self.u_dxixi_crown_coefficients_ubs = [torch.zeros_like(zero_vec)]
+            self.u_dxixi_crown_coefficients_ubs = [torch.zeros_like(zero_vec).to(self.device)]
             self.u_dxixi_crown_constants_ubs = [u_dxixi_upper_bounds[-1]]
 
             # debug computation with interval midpoint
@@ -1561,7 +1568,7 @@ class CROWNPINNSecondPartialDerivative():
                         raise NotImplementedError("plase choose a single line activation type for current codebase")
 
                     s = time.time()
-                    layer_output_lines = torch.Tensor([self.activation_derivative_derivative_relaxation.get_bounds(lb, ub) for lb, ub in zip(y_k_lbs.flatten(), y_k_ubs.flatten())]).reshape(-1, 4)
+                    layer_output_lines = torch.Tensor([self.activation_derivative_derivative_relaxation.get_bounds(lb, ub) for lb, ub in zip(y_k_lbs.flatten().cpu(), y_k_ubs.flatten().cpu())]).to(self.device).reshape(-1, 4)
                     non_zero_ub_m = torch.where(layer_output_lines[:, 0] != 0.0)[0]
                     non_zero_lb_m = torch.where(layer_output_lines[:, 2] != 0.0)[0]
                     layer_output_lines[non_zero_ub_m, 1] = (layer_output_lines[non_zero_ub_m, 1]) / (layer_output_lines[non_zero_ub_m, 0])
@@ -1571,7 +1578,7 @@ class CROWNPINNSecondPartialDerivative():
                     # layer_output_lines[:, 3] = (layer_output_lines[:, 3]) / (layer_output_lines[:, 2] - 1e-12)
 
                     layer_output_lines = layer_output_lines.reshape(*y_k_lbs.shape, 4)
-                    layer_actual_bounds = torch.Tensor([self.activation_derivative_derivative_relaxation.get_lb_ub_in_interval(lb, ub) for lb, ub in zip(y_k_lbs.flatten(), y_k_ubs.flatten())]).reshape(*y_k_lbs.shape, 2)
+                    layer_actual_bounds = torch.Tensor([self.activation_derivative_derivative_relaxation.get_lb_ub_in_interval(lb, ub) for lb, ub in zip(y_k_lbs.flatten().cpu(), y_k_ubs.flatten().cpu())]).to(self.device).reshape(*y_k_lbs.shape, 2)
 
                     layers_activation_second_derivative_output_lines.append(layer_output_lines)
                     layers_activation_second_derivative_actual_bounds.append(layer_actual_bounds)

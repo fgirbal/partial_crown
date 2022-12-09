@@ -13,11 +13,13 @@ class CROWNBurgersVerifier():
             self, model: List[torch.nn.Module],
             activation_relaxation: ActivationRelaxationType, 
             activation_derivative_relaxation: ActivationRelaxationType,
-            activation_second_derivative_relaxation: ActivationRelaxationType
+            activation_second_derivative_relaxation: ActivationRelaxationType,
+            device: torch.device = torch.device('cpu')
     ) -> None:
         self.u_theta = CROWNPINNSolution(
             model,
-            activation_relaxation=activation_relaxation
+            activation_relaxation=activation_relaxation,
+            device=device
         )
 
         self.u_dt_theta = CROWNPINNPartialDerivative(
