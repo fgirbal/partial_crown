@@ -7,8 +7,6 @@ from tools.custom_torch_modules import Mul
 from pinn_verifier.activations.activation_relaxations import ActivationRelaxationType
 from pinn_verifier.activations.tanh import TanhRelaxation, TanhDerivativeRelaxation, TanhSecondDerivativeRelaxation
 from pinn_verifier.utils import load_compliant_model
-from pinn_verifier.lp import LPPINNSolution
-from pinn_verifier.crown import CROWNPINNPartialDerivative, CROWNPINNSolution, CROWNPINNSecondPartialDerivative
 from pinn_verifier.allen_cahn import CROWNAllenCahnVerifier
 from pinn_verifier.branching import greedy_input_branching, VerbosityLevel
 
