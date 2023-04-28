@@ -9,7 +9,7 @@ from pinn_verifier.activations.tanh import TanhRelaxation, TanhDerivativeRelaxat
 from pinn_verifier.utils import load_compliant_model
 from pinn_verifier.lp import LPPINNSolution
 from pinn_verifier.crown import CROWNPINNPartialDerivative, CROWNPINNSolution, CROWNPINNSecondPartialDerivative
-from pinn_verifier.burgers import CROWNBurgersVerifier
+from pinn_verifier.allen_cahn import CROWNAllenCahnVerifier
 from pinn_verifier.branching import greedy_input_branching, VerbosityLevel
 
 torch.manual_seed(43)
@@ -54,32 +54,38 @@ for layer in layers:
     for param in layer.parameters():
         param.requires_grad = False
 
-boundary_conditions = torch.tensor([[0, -1], [1, 1]], dtype=dtype)
+residual_domain = torch.tensor([[-1, 0], [1, 1]], dtype=dtype)
 activation_relaxation = TanhRelaxation(ActivationRelaxationType.SINGLE_LINE)
 activation_derivative_relaxation = TanhDerivativeRelaxation(ActivationRelaxationType.SINGLE_LINE)
 activation_second_derivative_relaxation = TanhSecondDerivativeRelaxation(ActivationRelaxationType.SINGLE_LINE)
 
 def empirical_evaluation(model, grid_points):
-    # t, x = grid_points[:, 0:1], grid_points[:, 1:2]
-    # t.requires_grad_()
-    # x.requires_grad_()
-
-    # u = model(torch.hstack([t, x]))
-    # # u_t = torch.autograd.grad(u.sum(), t, create_graph=True, retain_graph=True, allow_unused=True)[0]
-    # u_x = torch.autograd.grad(u.sum(), x, create_graph=True, retain_graph=True, allow_unused=True)[0]
-    # u_xx = torch.autograd.grad(u_x.sum(), x, create_graph=True, retain_graph=True, allow_unused=True)[0]
-
-    # return u_xx
-    t, x = grid_points[:, 0:1], grid_points[:, 1:2]
-    t.requires_grad_()
+    x, t = grid_points[:, 0:1], grid_points[:, 1:2]
     x.requires_grad_()
+    t.requires_grad_()
 
-    u = model(torch.hstack([t, x]))
-    u_x = torch.autograd.grad(u.sum(), x, create_graph=True, retain_graph=True, allow_unused=True)[0]
-    u_t = torch.autograd.grad(u.sum(), t, create_graph=True, retain_graph=True, allow_unused=True)[0]
-    u_xx = torch.autograd.grad(u_x.sum(), x, create_graph=True, retain_graph=True, allow_unused=True)[0]
+    u = model(torch.hstack([x, t]))
+    u_t = torch.autograd.grad(
+        u, t,
+        grad_outputs=torch.ones_like(u),
+        retain_graph=True,
+        create_graph=True
+    )[0]
+    u_x = torch.autograd.grad(
+        u, x,
+        grad_outputs=torch.ones_like(u),
+        retain_graph=True,
+        create_graph=True
+    )[0]
 
-    return u_t + u * u_x - (0.01/np.pi) * u_xx
+    u_xx = torch.autograd.grad(
+        u_x, x,
+        grad_outputs=torch.ones_like(u_x),
+        retain_graph=True,
+        create_graph=True
+    )[0]
+
+    return u_t + 5 * u**3 - 5 * u - 0.0001 * u_xx
 
 def crown_verifier_function(layers, piece_domain, debug=True):
     # u_theta = CROWNPINNSolution(
@@ -112,13 +118,13 @@ def crown_verifier_function(layers, piece_domain, debug=True):
 
     # all_lbs, all_ubs = u_dxdx_theta.lower_bounds, u_dxdx_theta.upper_bounds
 
-    burgers = CROWNBurgersVerifier(
+    allen_cahn = CROWNAllenCahnVerifier(
         layers,
         activation_relaxation=activation_relaxation,
         activation_derivative_relaxation=activation_derivative_relaxation,
         activation_second_derivative_relaxation=activation_second_derivative_relaxation
     )
-    ub, lb = burgers.compute_residual_bound(
+    ub, lb = allen_cahn.compute_residual_bound(
         piece_domain,
         debug=False
     )
@@ -128,12 +134,7 @@ def crown_verifier_function(layers, piece_domain, debug=True):
         pdb.set_trace()
 
     logs = [
-        {
-            "u_theta": [burgers.u_theta.lower_bounds[-1][i].item(), burgers.u_theta.upper_bounds[-1][i].item()],
-            "u_dt_theta": [burgers.u_dt_theta.lower_bounds[-1][i].item(), burgers.u_dt_theta.upper_bounds[-1][i].item()],
-            "u_dx_theta": [burgers.u_dx_theta.lower_bounds[-1][i].item(), burgers.u_dx_theta.upper_bounds[-1][i].item()],
-            "u_dxdx_theta": [burgers.u_dxdx_theta.lower_bounds[-1][i].item(), burgers.u_dxdx_theta.upper_bounds[-1][i].item()]
-        }
+        {}
         for i in range(ub.shape[0])
     ]
 
@@ -192,7 +193,7 @@ def crown_verifier_function(layers, piece_domain, debug=True):
 greedy_input_branching(
     layers,
     model,
-    boundary_conditions,
+    residual_domain,
     empirical_evaluation,
     crown_verifier_function,
     args.greedy_output_pieces,

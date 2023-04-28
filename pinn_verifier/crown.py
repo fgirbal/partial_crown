@@ -374,6 +374,13 @@ class CROWNPINNSolution():
 
                 if debug:
                     point = layer(point)
+
+                    try:
+                        assert (point >= all_crown_lbs[-1]).all()
+                        assert (point <= all_crown_ubs[-1]).all()
+                    except:
+                        import pdb
+                        pdb.set_trace()
             else:
                 # batch compute the activation relaxations
                 s = time.time()
@@ -477,6 +484,30 @@ class CROWNPINNSolution():
                 all_crown_ubs.append(UB)
 
                 self.layer_CROWN_coefficients.append(CROWN_coefficients)
+
+                if debug:
+                    act_point = self.activation_relaxation.evaluate(point)
+                    point_ = layer(act_point)
+
+                    try:
+                        assert (act_point >= post_act_lbs).all()
+                        assert (act_point <= post_act_ubs).all()
+                    except:
+                        print("---- Activation relaxation out of bounds...")
+
+                        import pdb
+                        pdb.set_trace()
+
+                    try:
+                        assert (point_ >= all_crown_lbs[-1]).all()
+                        assert (point_ <= all_crown_ubs[-1]).all()
+                    except:
+                        print("---- Other error...")
+
+                        import pdb
+                        pdb.set_trace()
+
+                    point = point_
         
         self.pre_act_LBs = pre_act_LBs
         self.pre_act_UBs = pre_act_UBs

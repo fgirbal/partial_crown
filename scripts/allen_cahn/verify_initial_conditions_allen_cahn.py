@@ -1,11 +1,13 @@
 import argparse
 
+import numpy as np
 import torch
+from tools.custom_torch_modules import Mul
 
 from pinn_verifier.activations.activation_relaxations import ActivationRelaxationType
-from pinn_verifier.activations.tanh import TanhRelaxation
+from pinn_verifier.activations.tanh import TanhRelaxation, TanhDerivativeRelaxation, TanhSecondDerivativeRelaxation
 from pinn_verifier.utils import load_compliant_model
-from pinn_verifier.crown import CROWNPINNSolution
+from pinn_verifier.allen_cahn import CROWNAllenCahnVerifier
 from pinn_verifier.branching import greedy_input_branching, VerbosityLevel
 
 torch.manual_seed(43)
@@ -50,21 +52,22 @@ for layer in layers:
     for param in layer.parameters():
         param.requires_grad = False
 
-boundary_conditions = torch.tensor([[0, -1], [1, -1]], dtype=dtype)
-activation_relaxation = TanhRelaxation(ActivationRelaxationType.SINGLE_LINE)
+initial_conditions_domain = torch.tensor([[-1, 0], [1, 0]], dtype=dtype)
 
 def empirical_evaluation(model, grid_points):
-    return model(grid_points)
+    return model(grid_points) - (grid_points[:, 0]**2 * torch.cos(torch.pi * grid_points[:, 0])).unsqueeze(1)
 
 def crown_verifier_function(layers, piece_domain, debug=True):
-    u_theta = CROWNPINNSolution(
+    burgers = CROWNAllenCahnVerifier(
         layers,
-        activation_relaxation=activation_relaxation
+        activation_relaxation=TanhRelaxation(ActivationRelaxationType.SINGLE_LINE),
+        activation_derivative_relaxation=TanhDerivativeRelaxation(ActivationRelaxationType.SINGLE_LINE),
+        activation_second_derivative_relaxation=TanhSecondDerivativeRelaxation(ActivationRelaxationType.SINGLE_LINE),
     )
-    u_theta.domain_bounds = piece_domain
-    u_theta.compute_bounds(debug=debug)
-
-    ub, lb = u_theta.upper_bounds[-1], u_theta.lower_bounds[-1]
+    ub, lb = burgers.compute_initial_conditions_bounds(
+        piece_domain,
+        debug=debug
+    )
 
     if any(ub <= lb):
         import pdb
@@ -78,7 +81,7 @@ def crown_verifier_function(layers, piece_domain, debug=True):
 greedy_input_branching(
     layers,
     model,
-    boundary_conditions,
+    initial_conditions_domain,
     empirical_evaluation,
     crown_verifier_function,
     args.greedy_output_pieces,

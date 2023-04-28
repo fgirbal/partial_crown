@@ -4,6 +4,7 @@ from typing import List, Tuple
 import torch
 import gurobipy as grb
 
+relaxation_tolerance = 1e-7
 line_type = Tuple[torch.tensor, torch.tensor]
 quadratic_type = Tuple[torch.tensor, torch.tensor, torch.tensor]
 
@@ -94,9 +95,48 @@ class ActivationRelaxation():
             ub = ub.to(torch.float64)
 
         if self.type == ActivationRelaxationType.SINGLE_LINE:
-            return self.single_line_relaxation(lb, ub)
+            single_line_lb, single_line_ub = self.single_line_relaxation(lb, ub)
+            if single_line_lb[0] != 0:
+                new_single_line_lb = (single_line_lb[0], single_line_lb[1] - relaxation_tolerance)
+            else:
+                # shift the lower bound line to have a non-zero slope
+                new_slope = 1e-6
+                if single_line_lb[0] < 0:
+                    new_intersect = single_line_lb[1] - new_slope * lb
+                else:
+                    new_intersect = single_line_lb[1] - new_slope * ub
+                
+                new_single_line_lb = (new_slope, new_intersect)
+
+            if single_line_ub[0] != 0:
+                new_single_line_ub = (single_line_ub[0], single_line_ub[1] + relaxation_tolerance)
+            else:
+                # shift the upper bound line to have a non-zero slope
+                new_slope = 1e-6
+                if single_line_ub[0] < 0:
+                    new_intersect = single_line_ub[1] - new_slope * ub
+                else:
+                    new_intersect = single_line_ub[1] - new_slope * lb
+                
+                new_single_line_ub = (new_slope, new_intersect)
+
+            return new_single_line_lb, new_single_line_ub
         if self.type == ActivationRelaxationType.MULTI_LINE:
-            return self.multi_line_relaxation(lb, ub)
+            lines_lbs, lines_ubs = self.multi_line_relaxation(lb, ub)
+            new_lines_lbs = []
+            new_lines_ubs = []
+            for line in lines_lbs:
+                new_lines_lbs.append(
+                    line[0],
+                    line[1] - relaxation_tolerance
+                )
+            for line in lines_ubs:
+                new_lines_ubs.append(
+                    line[0],
+                    line[1] + relaxation_tolerance
+                )
+
+            return new_lines_lbs, new_lines_ubs
         if self.type == ActivationRelaxationType.QUADRATIC:
             return self.quadratic_relaxation(lb, ub)
         if self.type == ActivationRelaxationType.PIECEWISE_LINEAR:
