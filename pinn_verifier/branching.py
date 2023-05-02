@@ -80,8 +80,8 @@ def greedy_input_branching(
 
     Path(os.path.dirname(output_filename)).mkdir(parents=True, exist_ok=True)
 
-    ts = torch.linspace(domain_bounds[0, 0], domain_bounds[1, 0], 100)
-    xs = torch.linspace(domain_bounds[0, 1], domain_bounds[1, 1], 100)
+    ts = torch.linspace(domain_bounds[0, 0], domain_bounds[1, 0], 1000)
+    xs = torch.linspace(domain_bounds[0, 1], domain_bounds[1, 1], 1000)
     grid_ts, grid_xs = torch.meshgrid(ts, xs, indexing='ij')
     grid_points = torch.dstack([grid_ts, grid_xs]).reshape(-1, 2)
 

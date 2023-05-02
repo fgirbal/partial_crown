@@ -127,13 +127,11 @@ class ActivationRelaxation():
             new_lines_ubs = []
             for line in lines_lbs:
                 new_lines_lbs.append(
-                    line[0],
-                    line[1] - relaxation_tolerance
+                    (line[0], line[1] - relaxation_tolerance)
                 )
             for line in lines_ubs:
                 new_lines_ubs.append(
-                    line[0],
-                    line[1] + relaxation_tolerance
+                    (line[0], line[1] + relaxation_tolerance)
                 )
 
             return new_lines_lbs, new_lines_ubs

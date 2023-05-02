@@ -7,8 +7,7 @@ from tools.custom_torch_modules import Mul
 from pinn_verifier.activations.activation_relaxations import ActivationRelaxationType
 from pinn_verifier.activations.tanh import TanhRelaxation, TanhDerivativeRelaxation, TanhSecondDerivativeRelaxation
 from pinn_verifier.utils import load_compliant_model
-from pinn_verifier.lp import LPPINNSolution
-from pinn_verifier.crown import CROWNPINNPartialDerivative, CROWNPINNSolution, CROWNPINNSecondPartialDerivative, CROWNBurgersVerifier
+from pinn_verifier.diff_sorp import CROWNDiffusionSorpionVerifier
 from pinn_verifier.branching import greedy_input_branching, VerbosityLevel
 
 torch.manual_seed(43)
@@ -53,73 +52,61 @@ for layer in layers:
     for param in layer.parameters():
         param.requires_grad = False
 
-boundary_conditions = torch.tensor([[0, -1], [1, 1]], dtype=dtype)
+residual_domain = torch.tensor([[0, 0], [1, 500]], dtype=dtype)
 activation_relaxation = TanhRelaxation(ActivationRelaxationType.SINGLE_LINE)
 activation_derivative_relaxation = TanhDerivativeRelaxation(ActivationRelaxationType.SINGLE_LINE)
 activation_second_derivative_relaxation = TanhSecondDerivativeRelaxation(ActivationRelaxationType.SINGLE_LINE)
 
+D: float = 5e-4
+por: float = 0.29
+rho_s: float = 2880
+k_f: float = 3.5e-4
+n_f: float = 0.874
+
 def empirical_evaluation(model, grid_points):
-    # t, x = grid_points[:, 0:1], grid_points[:, 1:2]
-    # t.requires_grad_()
-    # x.requires_grad_()
-
-    # u = model(torch.hstack([t, x]))
-    # # u_t = torch.autograd.grad(u.sum(), t, create_graph=True, retain_graph=True, allow_unused=True)[0]
-    # u_x = torch.autograd.grad(u.sum(), x, create_graph=True, retain_graph=True, allow_unused=True)[0]
-    # u_xx = torch.autograd.grad(u_x.sum(), x, create_graph=True, retain_graph=True, allow_unused=True)[0]
-
-    # return u_xx
-    t, x = grid_points[:, 0:1], grid_points[:, 1:2]
-    t.requires_grad_()
+    x, t = grid_points[:, 0:1], grid_points[:, 1:2]
     x.requires_grad_()
+    t.requires_grad_()
 
-    u = model(torch.hstack([t, x]))
-    u_x = torch.autograd.grad(u.sum(), x, create_graph=True, retain_graph=True, allow_unused=True)[0]
-    u_t = torch.autograd.grad(u.sum(), t, create_graph=True, retain_graph=True, allow_unused=True)[0]
-    u_xx = torch.autograd.grad(u_x.sum(), x, create_graph=True, retain_graph=True, allow_unused=True)[0]
+    u = torch.nn.ReLU()(model(torch.hstack([x, t])))
 
-    return u_t + u * u_x - (0.01/np.pi) * u_xx
+    u_t = torch.autograd.grad(
+        u, t,
+        grad_outputs=torch.ones_like(u),
+        retain_graph=True,
+        create_graph=True
+    )[0]
+
+    u_x = torch.autograd.grad(
+        u, x,
+        grad_outputs=torch.ones_like(u),
+        retain_graph=True,
+        create_graph=True
+    )[0]
+
+    u_xx = torch.autograd.grad(
+        u_x, x,
+        grad_outputs=torch.ones_like(u_x),
+        retain_graph=True,
+        create_graph=True
+    )[0]
+
+    retardation_factor = 1 + ((1 - por) / por) * rho_s * k_f * n_f * (u + 1e-6) ** (
+        n_f - 1
+    )
+
+    return u_t - D / retardation_factor * u_xx
 
 def crown_verifier_function(layers, piece_domain, debug=True):
-    # u_theta = CROWNPINNSolution(
-    #     layers,
-    #     activation_relaxation=activation_relaxation
-    # )
-    # u_theta.domain_bounds = piece_domain
-    # u_theta.compute_bounds(debug=debug)
-
-    # # u_dt_theta = CROWNPINNPartialDerivative(
-    # #     u_theta,
-    # #     component_idx=0,
-    # #     activation_derivative_relaxation=TanhDerivativeRelaxation(ActivationRelaxationType.MULTI_LINE)
-    # # )
-    # # u_dt_theta.compute_bounds(debug=debug)
-
-    # u_dx_theta = CROWNPINNPartialDerivative(
-    #     u_theta,
-    #     component_idx=1,
-    #     activation_derivative_relaxation=activation_derivative_relaxation
-    # )
-    # u_dx_theta.compute_bounds(debug=debug)
-
-    # u_dxdx_theta = CROWNPINNSecondPartialDerivative(
-    #     u_dx_theta,
-    #     component_idx=1,
-    #     activation_second_derivative_relaxation=activation_second_derivative_relaxation
-    # )
-    # u_dxdx_theta.compute_bounds(debug=debug)
-
-    # all_lbs, all_ubs = u_dxdx_theta.lower_bounds, u_dxdx_theta.upper_bounds
-
-    burgers = CROWNBurgersVerifier(
+    diff_sorp = CROWNDiffusionSorpionVerifier(
         layers,
         activation_relaxation=activation_relaxation,
         activation_derivative_relaxation=activation_derivative_relaxation,
         activation_second_derivative_relaxation=activation_second_derivative_relaxation
     )
-    ub, lb = burgers.compute_residual_bound(
+    ub, lb = diff_sorp.compute_residual_bound(
         piece_domain,
-        debug=False
+        debug=debug
     )
 
     if any(ub <= lb):
@@ -127,29 +114,74 @@ def crown_verifier_function(layers, piece_domain, debug=True):
         pdb.set_trace()
 
     logs = [
-        {
-            "u_theta": [burgers.u_theta.lower_bounds[-1][i].item(), burgers.u_theta.upper_bounds[-1][i].item()],
-            "u_dt_theta": [burgers.u_dt_theta.lower_bounds[-1][i].item(), burgers.u_dt_theta.upper_bounds[-1][i].item()],
-            "u_dx_theta": [burgers.u_dx_theta.lower_bounds[-1][i].item(), burgers.u_dx_theta.upper_bounds[-1][i].item()],
-            "u_dxdx_theta": [burgers.u_dxdx_theta.lower_bounds[-1][i].item(), burgers.u_dxdx_theta.upper_bounds[-1][i].item()]
-        }
+        {}
         for i in range(ub.shape[0])
     ]
 
     return lb, ub, logs
 
+# piece_domain = torch.Tensor([
+#     [[0.2332, 0.2148], [0.2347, 0.2246]],
+#     [[0.2332, 0.2246], [0.2347, 0.2344]],
+#     [[0.2347, 0.2148], [0.2362, 0.2246]],
+#     [[0.2347, 0.2246], [0.2362, 0.2344]]
+# ])
+
+# t_min, x_min = piece_domain[0][0]
+# t_max, x_max = piece_domain[0][1]
+
+# ts = torch.linspace(t_min, t_max, 100)
+# xs = torch.linspace(x_min, x_max, 100)
+# grid_ts, grid_xs = torch.meshgrid(ts, xs, indexing='ij')
+# grid_points = torch.dstack([grid_ts, grid_xs]).reshape(-1, 2)
+
+# model_pts = empirical_evaluation(model, grid_points)
+# emp_min, emp_max = model_pts.min(), model_pts.max()
+
+# import time
+# s = time.time()
+# burgers = CROWNBurgersVerifier(
+#     layers,
+#     activation_relaxation=TanhRelaxation(ActivationRelaxationType.SINGLE_LINE),
+#     activation_derivative_relaxation=TanhDerivativeRelaxation(ActivationRelaxationType.SINGLE_LINE),
+#     activation_second_derivative_relaxation=TanhSecondDerivativeRelaxation(ActivationRelaxationType.SINGLE_LINE),
+# )
+# ub, lb = burgers.compute_residual_bound(
+#     piece_domain,
+#     debug=False
+# )
+# print(time.time()-s)
+
+# intermediate_comps_time = burgers.u_theta.computation_times['total_computation_time'] +\
+#     burgers.u_dt_theta.computation_times['total_computation_time'] +\
+#     burgers.u_dx_theta.computation_times['total_computation_time'] +\
+#     burgers.u_dxdx_theta.computation_times['total_computation_time']
+
+# intermediate_relaxations_time = burgers.u_theta.computation_times['activation_relaxations'] +\
+#     burgers.u_dt_theta.computation_times['activation_relaxations'] +\
+#     burgers.u_dx_theta.computation_times['activation_relaxations'] +\
+#     burgers.u_dxdx_theta.computation_times['activation_relaxations']
+
+# print(intermediate_comps_time)
+# print(intermediate_relaxations_time)
+# print(intermediate_relaxations_time/intermediate_comps_time)
+
+# import pdb
+# pdb.set_trace()
+
 
 greedy_input_branching(
     layers,
     model,
-    boundary_conditions,
+    residual_domain,
     empirical_evaluation,
     crown_verifier_function,
     args.greedy_output_pieces,
     input_filename=args.greedy_input_pieces,
     verbose=VerbosityLevel.NO_INDIVIDUAL_PROGRESS,
     maximum_computations=args.maximum_computations,
-    save_frequency=args.save_frequency
+    save_frequency=args.save_frequency,
+    save_history=True
 )
 
 # piece_domain = torch.tensor([[ 0.7422, -0.0078], [ 0.7441, -0.0039]])

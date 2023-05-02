@@ -1,14 +1,11 @@
 import argparse
 
-import numpy as np
 import torch
-from tools.custom_torch_modules import Mul
 
 from pinn_verifier.activations.activation_relaxations import ActivationRelaxationType
 from pinn_verifier.activations.tanh import TanhRelaxation, TanhDerivativeRelaxation, TanhSecondDerivativeRelaxation
 from pinn_verifier.utils import load_compliant_model
-from pinn_verifier.lp import LPPINNSolution
-from pinn_verifier.crown import CROWNPINNPartialDerivative, CROWNPINNSolution, CROWNPINNSecondPartialDerivative, CROWNBurgersVerifier
+from pinn_verifier.diff_sorp import CROWNDiffusionSorpionVerifier
 from pinn_verifier.branching import greedy_input_branching, VerbosityLevel
 
 torch.manual_seed(43)
@@ -53,23 +50,26 @@ for layer in layers:
     for param in layer.parameters():
         param.requires_grad = False
 
-boundary_conditions = torch.tensor([[0, 1], [1, 1]], dtype=dtype)
+boundary_conditions = torch.tensor([[0, 1], [0, 500]], dtype=dtype)
 activation_relaxation = TanhRelaxation(ActivationRelaxationType.SINGLE_LINE)
+relu = torch.nn.ReLU()
 
 def empirical_evaluation(model, grid_points):
-    return model(grid_points)
+    return relu(model(grid_points)) - 1
 
 def crown_verifier_function(layers, piece_domain, debug=True):
-    u_theta = CROWNPINNSolution(
+    diffusion_sorpion = CROWNDiffusionSorpionVerifier(
         layers,
-        activation_relaxation=activation_relaxation
+        activation_relaxation=TanhRelaxation(ActivationRelaxationType.SINGLE_LINE),
+        activation_derivative_relaxation=TanhDerivativeRelaxation(ActivationRelaxationType.SINGLE_LINE),
+        activation_second_derivative_relaxation=TanhSecondDerivativeRelaxation(ActivationRelaxationType.SINGLE_LINE),
     )
-    u_theta.domain_bounds = piece_domain
-    u_theta.compute_bounds(debug=debug)
+    ub, lb = diffusion_sorpion.compute_boundary_conditions_solution(
+        piece_domain,
+        debug=debug
+    )
 
-    ub, lb = u_theta.upper_bounds[-1], u_theta.lower_bounds[-1]
-
-    if any(ub <= lb):
+    if any(ub < lb):
         import pdb
         pdb.set_trace()
 

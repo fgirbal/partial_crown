@@ -16,7 +16,7 @@ args = parser.parse_args()
 
 model, layers = load_compliant_model(args.network_filename)
 
-data = scipy.io.loadmat('../../PINNs/appendix/Data/burgers_shock.mat')
+data = scipy.io.loadmat('../../../PINNs/appendix/Data/burgers_shock.mat')
     
 t = data['t'].flatten()
 x = data['x'].flatten()
@@ -90,8 +90,8 @@ xs = torch.linspace(domain_bounds[0, 1], domain_bounds[1, 1], 1000)
 grid_ts, grid_xs = torch.meshgrid(ts, xs, indexing='ij')
 all_grid_points = torch.dstack([grid_ts, grid_xs]).reshape(-1, 2)
 
-model_pts = model_get_residual(model, all_grid_points)
-all_min, all_max = model_pts.min(), model_pts.max()
+residual_pts = model_get_residual(model, all_grid_points)
+all_min, all_max = residual_pts.min(), residual_pts.max()
 
 print("---- residual ----")
 print("f min:", all_min)
@@ -104,26 +104,59 @@ print("---- u_theta ----")
 print("u_theta min:", all_min)
 print("u_theta max:", all_max)
 
-# u_dt_thetas = compute_torch_gradient_dt(model, all_grid_points)
-# all_min, all_max = u_dt_thetas.min(), u_dt_thetas.max()
+# import matplotlib.pyplot as plt
+# import pickle
+# full_new_data = pickle.load(open("burgers/u_1000_x_1000.pb", "rb"))
+# full_new_data = pickle.load(open("burgers/u_5000_x_5000.pb", "rb"))
+# full_new_data = full_new_data[::5, ::5]
 
-# print("---- u_dt_theta ----")
-# print("u_dt_theta min:", all_min)
-# print("u_dt_theta max:", all_max)
+residual_error_pts = (residual_pts).abs().detach().numpy()
+# u_error_pts = (torch.Tensor(full_new_data[:, 1:].T.reshape(-1, 1)) - u_thetas).abs().detach().numpy()
+# print(u_error_pts.mean())
 
-# u_dx_thetas = compute_torch_gradient_dx(model, all_grid_points)
-# all_min, all_max = u_dx_thetas.min(), u_dx_thetas.max()
+# plt.scatter(residual_error_pts, u_error_pts)
+# plt.show()
 
-# print("---- u_dx_theta ----")
-# print("u_dx_theta min:", all_min)
-# print("u_dx_theta max:", all_max)
+# last_ground_truth = full_new_data[:, -1]
+# last_u_theta = u_thetas[-1000:, 0]
 
-# u_dxdx_thetas = compute_torch_gradient_dxdx(model, all_grid_points)
-# all_min, all_max = u_dxdx_thetas.min(), u_dxdx_thetas.max()
+# plt.plot(last_ground_truth)
+# plt.plot(last_u_theta.detach().numpy(), '-r')
+# plt.show()
 
-# print("---- u_dxdx_theta ----")
-# print("u_dxdx_theta min:", all_min)
-# print("u_dxdx_theta max:", all_max)
+# smaller_residual_pts = model_get_residual(model, grid_points).abs().detach().numpy()
+
+# import pdb
+# pdb.set_trace()
+
+# import matplotlib
+# import matplotlib.colors as colors
+# import matplotlib.pyplot as plt
+
+# fig, ax = plt.subplots(1, 2, sharex=False)
+# fig.set_figheight(3)
+# fig.set_figwidth(15)
+
+# thetas_plot = ax[0].imshow(u_error_pts.reshape(grid_ts.shape).T, extent=[0, 1, -1, 1], aspect=0.2)
+# fig.colorbar(thetas_plot, ax=ax[0])
+# # ax[0].scatter(grid_points[:, 0], grid_points[:, 1], s=1, c="red")
+# ax[0].set_ylabel(r"$x$")
+# ax[0].set_xlabel(r"$t$")
+# ax[0].set_title(r"$u_{\theta} - u$")
+
+# # cmap = matplotlib.cm.get_cmap('seismic')
+# fs_plot = ax[1].imshow(residual_error_pts.reshape(grid_ts.shape).T, extent=[0, 1, -1, 1], aspect=0.2, cmap='seismic', norm=colors.CenteredNorm())
+# fig.colorbar(fs_plot, ax=ax[1])
+# # ax[1].scatter(grid_points[:, 0], grid_points[:, 1], s=1, c="red")
+# ax[1].set_ylabel(r"$x$")
+# ax[1].set_xlabel(r"$t$")
+# ax[1].set_title(r"$f_{\theta}$")
+
+# plt.tight_layout()
+# plt.show()
+
+# import pdb
+# pdb.set_trace()
 
 import matplotlib
 import matplotlib.colors as colors
@@ -133,27 +166,40 @@ plt.rcParams.update({
     "text.usetex": True,
     "font.family": "sans-serif",
     "font.sans-serif": ["Helvetica"],
-    "font.size": 14
+    "font.size": 20
 })
 
-fig, ax = plt.subplots(1, 2, sharex=False)
-fig.set_figheight(3)
-fig.set_figwidth(15)
+fig, ax = plt.subplots(2, 1, sharey=True)
+fig.set_figheight(8)
+fig.set_figwidth(5)
 
-thetas_plot = ax[0].imshow(u_thetas.detach().numpy().reshape(grid_ts.shape).T, extent=[0, 1, -1, 1], aspect=0.2)
+# fig, ax = plt.subplots(1, 1, sharex=False, sharey=True)
+# fig.set_figheight(3)
+# fig.set_figwidth(15)
+
+thetas_plot = ax[0].imshow(u_thetas.detach().numpy().reshape(grid_ts.shape).T, extent=[0, 1, -1, 1], aspect=0.5, cmap='viridis')
 fig.colorbar(thetas_plot, ax=ax[0])
 # ax[0].scatter(grid_points[:, 0], grid_points[:, 1], s=1, c="red")
 ax[0].set_ylabel(r"$x$")
 ax[0].set_xlabel(r"$t$")
 ax[0].set_title(r"$u_{\theta}$")
 
+# idx = 0
+# u_error = ax.imshow(u_error_pts.reshape(grid_ts.shape).T, extent=[0, 1, -1, 1], aspect=0.2, cmap='hot')
+# fig.colorbar(u_error, ax=ax)
+# ax.scatter(grid_points[:, 0], grid_points[:, 1], s=1, c="red")
+# ax.set_ylabel(r"$x$")
+# ax.set_xlabel(r"$t$")
+# ax.set_title(r"$|u_{\theta} - u|$")
+
 # cmap = matplotlib.cm.get_cmap('seismic')
-fs_plot = ax[1].imshow(model_pts.detach().numpy().reshape(grid_ts.shape).T, extent=[0, 1, -1, 1], aspect=0.2, cmap='seismic', norm=colors.CenteredNorm())
-fig.colorbar(fs_plot, ax=ax[1])
-# ax[1].scatter(grid_points[:, 0], grid_points[:, 1], s=1, c="red")
-ax[1].set_ylabel(r"$x$")
-ax[1].set_xlabel(r"$t$")
-ax[1].set_title(r"$f_{\theta}$")
+idx = 1
+fs_plot = ax[idx].imshow((residual_error_pts**2).reshape(grid_ts.shape).T, extent=[0, 1, -1, 1], aspect=0.5, cmap='Reds')
+fig.colorbar(fs_plot, ax=ax[idx])
+# ax[idx].scatter(grid_points[:, 0], grid_points[:, 1], s=1, c="red")
+# ax[idx].set_ylabel(r"$x$")
+ax[idx].set_xlabel(r"$t$")
+ax[idx].set_title(r"$|f_{\theta}|^2$")
 
 plt.tight_layout()
 plt.show()

@@ -129,16 +129,49 @@ ts = torch.linspace(domain_bounds[0, 1], domain_bounds[1, 1], 1000)
 grid_xs, grid_ts = torch.meshgrid(xs, ts, indexing='ij')
 all_grid_points = torch.dstack([grid_xs, grid_ts]).reshape(-1, 2)
 
-f_us = model_get_residual(model, all_grid_points)
+f_us = model_get_residual(model, X_star)
 f_u_min, f_u_max = f_us.min(), f_us.max()
 
 print("---- residual ----")
 print("f_u min:", f_u_min)
 print("f_u max:", f_u_max)
 
-f_us_squared = (f_us)**2
+f_us_squared = (f_us).abs() / ((f_us).abs()).max()
 
-u_thetas = model(all_grid_points)
+u_thetas = model(X_star)
+
+import matplotlib
+import matplotlib.colors as colors
+import matplotlib.pyplot as plt
+
+plt.rcParams.update({
+    "text.usetex": True,
+    "font.family": "sans-serif",
+    "font.sans-serif": ["Helvetica"],
+    "font.size": 20
+})
+
+fig, ax = plt.subplots(2, 1, sharey=True)
+fig.set_figheight(8)
+fig.set_figwidth(5)
+
+thetas_plot = ax[0].imshow(errors_u.reshape(X.shape).T, extent=[0, 1, -1, 1], aspect=0.5)
+fig.colorbar(thetas_plot, ax=ax[0])
+# ax[0].scatter(grid_points[:, 0], grid_points[:, 1], s=1, c="red")
+ax[0].set_ylabel(r"$x$")
+ax[0].set_xlabel(r"$t$")
+ax[0].set_title(r"$|u_{\theta} - \tilde{u}|$")
+
+# cmap = matplotlib.cm.get_cmap('seismic')
+fs_plot = ax[1].imshow(f_us_squared.detach().numpy().reshape(X.shape).T, extent=[0, 1, -1, 1], aspect=0.5, cmap='Reds', norm=matplotlib.colors.LogNorm())
+fig.colorbar(fs_plot, ax=ax[1])
+# ax[1].scatter(grid_points[:, 0], grid_points[:, 1], s=1, c="red")
+ax[1].set_ylabel(r"$x$")
+ax[1].set_xlabel(r"$t$")
+ax[1].set_title(r"$|f_{\theta}|^2$")
+
+plt.tight_layout()
+plt.show()
 
 # def compute_torch_gradient_dt(model, X_r):
 #     t, x = X_r[:, 0:1], X_r[:, 1:2]
@@ -193,22 +226,22 @@ plt.rcParams.update({
     "text.usetex": True,
     "font.family": "sans-serif",
     "font.sans-serif": ["Helvetica"],
-    "font.size": 14
+    "font.size": 20
 })
 
-fig, ax = plt.subplots(1, 2, sharex=True)
-fig.set_figheight(3)
-fig.set_figwidth(15)
+fig, ax = plt.subplots(2, 1, sharey=True)
+fig.set_figheight(8)
+fig.set_figwidth(5)
 
-thetas_plot = ax[0].imshow(u_thetas.detach().numpy().reshape(grid_ts.shape), extent=[0, 1, -1, 1], aspect=0.2)
+thetas_plot = ax[0].imshow(u_thetas.detach().numpy().reshape(X.shape).T, extent=[0, 1, -1, 1], aspect=0.5)
 fig.colorbar(thetas_plot, ax=ax[0])
 # ax[0].scatter(grid_points[:, 0], grid_points[:, 1], s=1, c="red")
 ax[0].set_ylabel(r"$x$")
 ax[0].set_xlabel(r"$t$")
-ax[0].set_title(r"$|u_{\theta}|$")
+ax[0].set_title(r"$u_{\theta}$")
 
 # cmap = matplotlib.cm.get_cmap('seismic')
-fs_plot = ax[1].imshow(f_us_squared.detach().numpy().reshape(grid_ts.shape), extent=[0, 1, -1, 1], aspect=0.2, cmap='hot')
+fs_plot = ax[1].imshow(f_us_squared.detach().numpy().reshape(X.shape).T, extent=[0, 1, -1, 1], aspect=0.5, cmap='Reds')
 fig.colorbar(fs_plot, ax=ax[1])
 # ax[1].scatter(grid_points[:, 0], grid_points[:, 1], s=1, c="red")
 ax[1].set_ylabel(r"$x$")

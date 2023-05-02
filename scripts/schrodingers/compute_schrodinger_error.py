@@ -16,7 +16,7 @@ args = parser.parse_args()
 
 model, layers = load_compliant_model(args.network_filename)
 
-data = scipy.io.loadmat('data/schrodinger.mat')
+data = scipy.io.loadmat('../data/schrodinger.mat')
     
 t = data['tt'].flatten()[:,None]
 x = data['x'].flatten()[:,None]
@@ -81,8 +81,8 @@ def model_get_residual(model, X_r):
 
 domain_bounds = torch.tensor([[0, -5], [np.pi/2, 5]])
 
-ts = torch.linspace(domain_bounds[0, 0], domain_bounds[1, 0], 100)
-xs = torch.linspace(domain_bounds[0, 1], domain_bounds[1, 1], 100)
+ts = torch.linspace(domain_bounds[0, 0], domain_bounds[1, 0], 1000)
+xs = torch.linspace(domain_bounds[0, 1], domain_bounds[1, 1], 1000)
 grid_ts, grid_xs = torch.meshgrid(ts, xs, indexing='ij')
 all_grid_points = torch.dstack([grid_ts, grid_xs]).reshape(-1, 2)
 
@@ -172,22 +172,22 @@ plt.rcParams.update({
     "text.usetex": True,
     "font.family": "sans-serif",
     "font.sans-serif": ["Helvetica"],
-    "font.size": 14
+    "font.size": 20
 })
 
-fig, ax = plt.subplots(1, 2, sharex=True)
-fig.set_figheight(3)
-fig.set_figwidth(15)
+fig, ax = plt.subplots(2, 1, sharey=True)
+fig.set_figheight(8)
+fig.set_figwidth(5)
 
-thetas_plot = ax[0].imshow(h_theta_norm.detach().numpy().reshape(grid_ts.shape).T, extent=[0, np.pi/2, -5, 5], aspect=0.05)
+thetas_plot = ax[0].imshow(h_theta_norm.detach().numpy().reshape(grid_ts.shape).T, extent=[0, np.pi/2, -5, 5], aspect=0.157)
 fig.colorbar(thetas_plot, ax=ax[0])
 # ax[0].scatter(grid_points[:, 0], grid_points[:, 1], s=1, c="red")
 ax[0].set_ylabel(r"$x$")
 ax[0].set_xlabel(r"$t$")
-ax[0].set_title(r"$|h_{\theta}|$")
+ax[0].set_title(r"$|u_{\theta}|$")
 
 # cmap = matplotlib.cm.get_cmap('seismic')
-fs_plot = ax[1].imshow(f_hs.detach().numpy().reshape(grid_ts.shape).T, extent=[0, np.pi/2, -5, 5], aspect=0.05, cmap='seismic', norm=colors.CenteredNorm())
+fs_plot = ax[1].imshow(f_hs.detach().numpy().reshape(grid_ts.shape).T, extent=[0, np.pi/2, -5, 5], aspect=0.157, cmap='Reds')
 fig.colorbar(fs_plot, ax=ax[1])
 # ax[1].scatter(grid_points[:, 0], grid_points[:, 1], s=1, c="red")
 ax[1].set_ylabel(r"$x$")
